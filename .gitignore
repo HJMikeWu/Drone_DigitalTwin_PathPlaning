@@ -21,3 +21,5 @@ last_app_ready.txt
 # 環境變數 (避免洩漏個人資訊)
 .env
 pso_warehouse_real_obstacles.py
+.gitignore
+
