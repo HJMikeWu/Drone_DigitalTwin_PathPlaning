@@ -84,16 +84,16 @@ from isaacsim.core.utils.viewports import set_camera_view
 from omni.kit.viewport.utility import create_viewport_window, get_active_viewport_window
 
 
-class PSOWarehouseRealObstacles:
+class AIWarehouseRoutePlanner:
     """
-    Particle Swarm Optimization (PSO) Path Planning Simulation
-    Integrates dynamic obstacle detection using Isaac Sim's USD context.
+    AI-Based Warehouse Route Planning Simulation
+    Integrates real-scene obstacle extraction using Isaac Sim USD context.
 
     Architecture Capabilities:
-    - Automated geometric primitive extraction from the USD Stage.
-    - Identification and segmentation of obstacles via precise Bounding Box evaluations.
-    - Spatial filtering algorithms relying on volumetric dimensions and elevation constraints.
-    - Procedurally robust detection invariant to hardcoded spatial limits.
+    - Automated geometric primitive traversal from USD Stage.
+    - Obstacle identification through precise Bounding Box evaluation.
+    - Runtime free-space scanning for feasible initialization.
+    - Collision-aware random start and goal generation within environment constraints.
     """
 
     def __init__(self):
@@ -143,7 +143,7 @@ class PSOWarehouseRealObstacles:
             self.obstacles = self.detect_real_obstacles()
 
             if not self.obstacles:
-                print("⚠ 警告：未偵測到任何障礙物！PSO 將在無障礙空間中運行。")
+                print("⚠ 警告：未偵測到任何障礙物！AI 最佳化將在無障礙空間中運行。")
             else:
                 print(f"✓ 共偵測到 {len(self.obstacles)} 個真實障礙物")
 
@@ -160,7 +160,7 @@ class PSOWarehouseRealObstacles:
             config_multirotor = MultirotorConfig()
             
             # 使用 Pegasus 範例提供的高級 NonlinearController
-            # 初始時先不給軌跡，等 PSO 運算完再指定
+            # 初始時先不給軌跡，等 AI 路徑運算完再指定
             controller = NonlinearController(
                 trajectory_file=None,
                 Kp=[15.0, 15.0, 15.0],  # 提高位置增益 (Kp) 讓軌跡追蹤更緊密
@@ -170,7 +170,7 @@ class PSOWarehouseRealObstacles:
             config_multirotor.init_pos = self.start_pos.tolist()
 
             self.drone = Multirotor(
-                "/World/Iris_PSO",
+                "/World/Iris_AI",
                 ROBOTS['Iris'],
                 0,
                 self.start_pos.tolist(),
@@ -203,8 +203,8 @@ class PSOWarehouseRealObstacles:
             traceback.print_exc()
             raise
 
-        # PSO 參數
-        self.num_particles = 60  # 降低粒子數以提升運算速度
+        # RRT 路徑最佳化參數
+        self.num_particles = 60  # 每輪評估的候選網路數量
         self.goal_tolerance = 0.05  # 目標容差
         self.obs_bounds_xyz = np.empty((0, 6), dtype=float)
         self.refresh_obstacle_cache()
@@ -213,19 +213,28 @@ class PSOWarehouseRealObstacles:
         # 先給預設值讓後續 fitness_function 等方法可以正常存取
         self.num_waypoints = 3
         self.particle_dim = self.num_waypoints * 3
-        self.particles = np.zeros((self.num_particles, self.particle_dim))
-        self.velocities = np.zeros((self.num_particles, self.particle_dim))
-        self.personal_best = self.particles.copy()
-        self.personal_best_fitness = np.full(self.num_particles, np.inf)
-
-        self.global_best = self.particles[0].copy()
-        self.global_best_fitness = self.fitness_function(self.global_best)
+        self.particles = np.zeros((self.num_particles, self.particle_dim))  # 用於可視化候選路徑
+        self.global_best = np.zeros(self.particle_dim)
+        self.global_best_fitness = np.inf
 
         self.global_best_path = [self.global_best.copy()]
         self.goal_reached = False
         self.path_visible = False
-        self.pso_iteration = 0
-        self.pso_max_iterations = 500
+        self.optim_iteration = 0
+        self.optim_max_iterations = 500
+        self.rrt_step_size = 1.0
+        self.rrt_goal_bias = 0.20
+        self.rrt_expand_per_iter = 30
+        self.rrt_goal_threshold = 1.2
+        self.rrt_rewire_radius = 2.2
+        self.rrt_nodes = []
+        self.rrt_parents = []
+        self.rrt_costs = []
+        self.rrt_best_goal_idx = None
+        self.rrt_recent_new_nodes = []
+        self.rrt_recent_new_edges = []
+        self.rrt_added_last = 0
+        self.rrt_rewire_count_last = 0
 
         # 自動錄影狀態（_move 版本）
         self.recording_enabled = True
@@ -238,9 +247,7 @@ class PSOWarehouseRealObstacles:
         # 起終點既定，實際動態計算需要多少轉折點
         self.compute_dynamic_waypoints()
 
-        self.update_fitness()
-
-        print("場景建置完成，無人機已就緒。PSO 路徑規劃初始化完成。")
+        print("場景建置完成，無人機已就緒。RRT 路徑規劃初始化完成。")
 
     def ensure_camera_prim(self, camera_path):
         stage = omni.usd.get_context().get_stage()
@@ -426,8 +433,8 @@ class PSOWarehouseRealObstacles:
         movies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "movies")
         os.makedirs(movies_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.recording_output_path = os.path.join(movies_dir, f"pso_v3_move_round_{int(round_index):03d}_{ts}.mp4")
-        self.recording_log_path = os.path.join(movies_dir, f"pso_v3_move_round_{int(round_index):03d}_{ts}.log")
+        self.recording_output_path = os.path.join(movies_dir, f"ai_route_round_{int(round_index):03d}_{ts}.mp4")
+        self.recording_log_path = os.path.join(movies_dir, f"ai_route_round_{int(round_index):03d}_{ts}.log")
 
         cmd = [
             ffmpeg_bin,
@@ -628,7 +635,7 @@ class PSOWarehouseRealObstacles:
         return True
 
     def compute_dynamic_waypoints(self):
-        """依據起終點距離與障礙物複雜度決定轉折點數，並初始化粒子群。"""
+        """依據場景複雜度決定 waypoint 數量，並初始化 RRT 規劃器。"""
         straight_distance = np.linalg.norm(self.start_pos[:2] - self.goal_pos[:2])
 
         if straight_distance < 6.0:
@@ -643,45 +650,291 @@ class PSOWarehouseRealObstacles:
 
         self.particle_dim = self.num_waypoints * 3
         self.particles = np.zeros((self.num_particles, self.particle_dim))
-        self.velocities = np.zeros((self.num_particles, self.particle_dim))
-        self.personal_best = np.zeros((self.num_particles, self.particle_dim))
-        self.personal_best_fitness = np.full(self.num_particles, np.inf)
+        self.init_rrt_planner()
 
-        z_fixed = float(self.start_pos[2])
-        self.particles[:, 0::3] = np.random.uniform(self.space_min_x, self.space_max_x, size=(self.num_particles, self.num_waypoints))
-        self.particles[:, 1::3] = np.random.uniform(self.space_min_y, self.space_max_y, size=(self.num_particles, self.num_waypoints))
-        self.particles[:, 2::3] = np.random.uniform(self.planning_z_min, self.planning_z_max, size=(self.num_particles, self.num_waypoints))
+    def _path_to_fixed_waypoints(self, path_points):
+        """將任意長度路徑重採樣成固定 num_waypoints，供既有流程使用。"""
+        pts = np.array(path_points, dtype=float)
+        if len(pts) < 2:
+            return np.tile(self.start_pos, (self.num_waypoints, 1))
 
-        # 多數粒子以「起點到終點連線」附近初始化，減少早期無效探索
-        # 少數粒子（20%）以「起點→終點連線」附近初始化，確保直線方向有粒子作為種子；
-        # 其餘 80% 保持前面的全場域均勻分佈，讓 PSO 自由探索整個空間
-        guided_n = int(self.num_particles * 0.2)
-        if guided_n > 0:
-            alphas = np.linspace(1.0 / (self.num_waypoints + 1), self.num_waypoints / (self.num_waypoints + 1), self.num_waypoints)
-            guide_xy = np.stack([
-                (1.0 - alphas) * self.start_pos[0] + alphas * self.goal_pos[0],
-                (1.0 - alphas) * self.start_pos[1] + alphas * self.goal_pos[1],
-            ], axis=1)
-            # noise std 放大到場域寬度的 1/4，讓種子粒子也有足夠擴散
-            space_w = max(self.space_max_x - self.space_min_x, self.space_max_y - self.space_min_y)
-            noise_std = max(space_w * 0.25, 2.0)
-            noise = np.random.normal(0.0, noise_std, size=(guided_n, self.num_waypoints, 2))
-            guided_xy = guide_xy[np.newaxis, :, :] + noise
-            guided_xy[..., 0] = np.clip(guided_xy[..., 0], self.space_min_x, self.space_max_x)
-            guided_xy[..., 1] = np.clip(guided_xy[..., 1], self.space_min_y, self.space_max_y)
-            self.particles[:guided_n, 0::3] = guided_xy[..., 0]
-            self.particles[:guided_n, 1::3] = guided_xy[..., 1]
-            guided_z = z_fixed + np.random.normal(0.0, 0.25, size=(guided_n, self.num_waypoints))
-            guided_z = np.clip(guided_z, self.planning_z_min, self.planning_z_max)
-            self.particles[:guided_n, 2::3] = guided_z
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total = np.sum(seg)
+        if total < 1e-6:
+            return np.tile(pts[0], (self.num_waypoints, 1))
 
-        self.personal_best = self.particles.copy()
-        self.global_best = self.particles[0].copy()
-        self.global_best_fitness = self.fitness_function(self.global_best)
-        self.global_best_path = [self.start_pos.copy()] + list(self.global_best.reshape(self.num_waypoints, 3)) + [self.goal_pos.copy()]
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        targets = np.linspace(total / (self.num_waypoints + 1), total * self.num_waypoints / (self.num_waypoints + 1), self.num_waypoints)
+        out = np.zeros((self.num_waypoints, 3), dtype=float)
+        for i, t in enumerate(targets):
+            j = np.searchsorted(cum, t, side='right') - 1
+            j = int(np.clip(j, 0, len(seg) - 1))
+            local = (t - cum[j]) / max(seg[j], 1e-6)
+            out[i] = pts[j] + local * (pts[j + 1] - pts[j])
+        return out
+
+    def _cubic_bezier_point(self, p0, p1, p2, p3, t):
+        """3D cubic Bezier 單點。"""
+        omt = 1.0 - t
+        return (
+            (omt ** 3) * p0
+            + 3.0 * (omt ** 2) * t * p1
+            + 3.0 * omt * (t ** 2) * p2
+            + (t ** 3) * p3
+        )
+
+    def smooth_path_with_bezier(self, path_points, samples_per_seg=8, smooth_factor=1.0):
+        """以 Catmull-Rom 轉 Bezier 的方式平滑 3D 路徑。"""
+        pts = [np.array(p, dtype=float) for p in path_points]
+        if len(pts) < 3:
+            return pts
+
+        s = float(np.clip(smooth_factor, 0.0, 1.5))
+        out = [pts[0].copy()]
+        n = len(pts)
+
+        for i in range(n - 1):
+            p0 = pts[i - 1] if i - 1 >= 0 else pts[i]
+            p1 = pts[i]
+            p2 = pts[i + 1]
+            p3 = pts[i + 2] if i + 2 < n else pts[i + 1]
+
+            # Catmull-Rom -> Bezier 控制點
+            c1 = p1 + (p2 - p0) * (s / 6.0)
+            c2 = p2 - (p3 - p1) * (s / 6.0)
+
+            for k in range(1, samples_per_seg + 1):
+                t = k / float(samples_per_seg)
+                out.append(self._cubic_bezier_point(p1, c1, c2, p2, t))
+
+        return out
+
+    def _polyline_collision_free(self, path_points):
+        """檢查 polyline 每段是否都無碰撞。"""
+        if len(path_points) < 2:
+            return True
+        for i in range(len(path_points) - 1):
+            if not self._segment_collision_free(np.array(path_points[i], dtype=float), np.array(path_points[i + 1], dtype=float)):
+                return False
+        return True
+
+    def _segment_collision_free(self, p1, p2):
+        """3D 線段與障礙物膨脹包圍盒碰撞檢查。"""
+        if len(self.obs_bounds_xyz) == 0:
+            return True
+
+        obs = self.obs_bounds_xyz
+        ox, oy, oz = obs[:, 0], obs[:, 1], obs[:, 2]
+        oxw, oyh, ozh = obs[:, 3], obs[:, 4], obs[:, 5]
+        dx, dy, dz = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]
+        EPS = 1e-9
+
+        if abs(dx) < EPS:
+            tx_lo = np.where((p1[0] >= ox) & (p1[0] <= oxw), -np.inf, np.inf)
+            tx_hi = np.where((p1[0] >= ox) & (p1[0] <= oxw), np.inf, -np.inf)
+        else:
+            tx1 = (ox - p1[0]) / dx
+            tx2 = (oxw - p1[0]) / dx
+            tx_lo = np.minimum(tx1, tx2)
+            tx_hi = np.maximum(tx1, tx2)
+
+        if abs(dy) < EPS:
+            ty_lo = np.where((p1[1] >= oy) & (p1[1] <= oyh), -np.inf, np.inf)
+            ty_hi = np.where((p1[1] >= oy) & (p1[1] <= oyh), np.inf, -np.inf)
+        else:
+            ty1 = (oy - p1[1]) / dy
+            ty2 = (oyh - p1[1]) / dy
+            ty_lo = np.minimum(ty1, ty2)
+            ty_hi = np.maximum(ty1, ty2)
+
+        if abs(dz) < EPS:
+            tz_lo = np.where((p1[2] >= oz) & (p1[2] <= ozh), -np.inf, np.inf)
+            tz_hi = np.where((p1[2] >= oz) & (p1[2] <= ozh), np.inf, -np.inf)
+        else:
+            tz1 = (oz - p1[2]) / dz
+            tz2 = (ozh - p1[2]) / dz
+            tz_lo = np.minimum(tz1, tz2)
+            tz_hi = np.maximum(tz1, tz2)
+
+        t_enter = np.maximum(np.maximum(tx_lo, ty_lo), tz_lo)
+        t_exit = np.minimum(np.minimum(tx_hi, ty_hi), tz_hi)
+        hit = (t_enter <= t_exit + EPS) & (t_exit >= -EPS) & (t_enter <= 1.0 + EPS)
+        return not bool(np.any(hit))
+
+    def init_rrt_planner(self):
+        """初始化 RRT 樹。"""
+        self.rrt_nodes = [self.start_pos.copy()]
+        self.rrt_parents = [-1]
+        self.rrt_costs = [0.0]
+        self.rrt_best_goal_idx = None
+        self.rrt_recent_new_nodes = []
+        self.rrt_recent_new_edges = []
+        self.rrt_added_last = 0
+        self.rrt_rewire_count_last = 0
+        self.optim_iteration = 0
+        self.goal_reached = False
+
+        # 先用起終點直線作為初始路徑（若可行）
+        if self._segment_collision_free(self.start_pos, self.goal_pos):
+            seed_path = [self.start_pos.copy(), self.goal_pos.copy()]
+            wp = self._path_to_fixed_waypoints(seed_path)
+            self.global_best = wp.reshape(-1)
+            self.global_best_fitness = self.fitness_function(self.global_best)
+            self.global_best_path = seed_path
+            self.goal_reached = True
+            self.rrt_best_goal_idx = 0
+        else:
+            wp = self._path_to_fixed_waypoints([self.start_pos.copy(), self.goal_pos.copy()])
+            self.global_best = wp.reshape(-1)
+            self.global_best_fitness = self.fitness_function(self.global_best)
+            self.global_best_path = [self.start_pos.copy()] + list(wp) + [self.goal_pos.copy()]
+
+        self.particles[:, :] = self.global_best[np.newaxis, :]
+
+    def _sample_rrt_target(self):
+        if np.random.rand() < self.rrt_goal_bias:
+            return self.goal_pos.copy()
+        return np.array([
+            np.random.uniform(self.space_min_x, self.space_max_x),
+            np.random.uniform(self.space_min_y, self.space_max_y),
+            np.random.uniform(self.planning_z_min, self.planning_z_max),
+        ])
+
+    def _nearest_rrt_index(self, point):
+        nodes = np.array(self.rrt_nodes)
+        d = np.linalg.norm(nodes - point[np.newaxis, :], axis=1)
+        return int(np.argmin(d))
+
+    def _neighbor_rrt_indices(self, point, radius):
+        nodes = np.array(self.rrt_nodes)
+        d = np.linalg.norm(nodes - point[np.newaxis, :], axis=1)
+        return np.where(d <= radius)[0].tolist()
+
+    def _propagate_cost_delta(self, root_idx, delta):
+        """當 rewiring 改變父節點成本時，更新其所有子孫成本。"""
+        if abs(delta) < 1e-9:
+            return
+        stack = [root_idx]
+        while stack:
+            cur = stack.pop()
+            self.rrt_costs[cur] += delta
+            children = [i for i, p in enumerate(self.rrt_parents) if p == cur]
+            stack.extend(children)
+
+    def _steer_towards(self, src, dst):
+        vec = dst - src
+        dist = np.linalg.norm(vec)
+        if dist < 1e-6:
+            return src.copy()
+        step = min(self.rrt_step_size, dist)
+        return src + (vec / dist) * step
+
+    def _backtrack_rrt_path(self, end_idx):
+        out = []
+        cur = end_idx
+        while cur >= 0:
+            out.append(self.rrt_nodes[cur])
+            cur = self.rrt_parents[cur]
+        out.reverse()
+        if np.linalg.norm(out[-1] - self.goal_pos) > 1e-6:
+            out.append(self.goal_pos.copy())
+        return out
+
+    def update_neural_optimizer(self):
+        """相容舊介面：AI 版本改為執行 RRT* 擴展。"""
+        if self.goal_reached:
+            return
+
+        self.rrt_recent_new_nodes = []
+        self.rrt_recent_new_edges = []
+        self.rrt_added_last = 0
+        self.rrt_rewire_count_last = 0
+
+        for _ in range(self.rrt_expand_per_iter):
+            sample = self._sample_rrt_target()
+            near_idx = self._nearest_rrt_index(sample)
+            near = self.rrt_nodes[near_idx]
+            new_node = self._steer_towards(near, sample)
+
+            if not self._segment_collision_free(near, new_node):
+                continue
+
+            # RRT* Step 1: 在鄰域內選擇最低成本且可連通的父節點
+            neighbors = self._neighbor_rrt_indices(new_node, self.rrt_rewire_radius)
+            if near_idx not in neighbors:
+                neighbors.append(near_idx)
+
+            best_parent = near_idx
+            best_cost = self.rrt_costs[near_idx] + np.linalg.norm(new_node - near)
+            for nb in neighbors:
+                if nb == near_idx:
+                    continue
+                cand_parent = self.rrt_nodes[nb]
+                if not self._segment_collision_free(cand_parent, new_node):
+                    continue
+                cand_cost = self.rrt_costs[nb] + np.linalg.norm(new_node - cand_parent)
+                if cand_cost < best_cost:
+                    best_cost = cand_cost
+                    best_parent = nb
+
+            self.rrt_nodes.append(new_node)
+            self.rrt_parents.append(best_parent)
+            self.rrt_costs.append(best_cost)
+            new_idx = len(self.rrt_nodes) - 1
+            self.rrt_added_last += 1
+            self.rrt_recent_new_nodes.append(new_node.copy())
+            self.rrt_recent_new_edges.append((self.rrt_nodes[best_parent].copy(), new_node.copy()))
+
+            # RRT* Step 2: rewiring 鄰域節點到新節點，若可降低成本
+            for nb in neighbors:
+                if nb == best_parent or nb == new_idx:
+                    continue
+                nb_node = self.rrt_nodes[nb]
+                if not self._segment_collision_free(new_node, nb_node):
+                    continue
+                rewired_cost = self.rrt_costs[new_idx] + np.linalg.norm(nb_node - new_node)
+                if rewired_cost + 1e-9 < self.rrt_costs[nb]:
+                    old_cost = self.rrt_costs[nb]
+                    old_parent = self.rrt_parents[nb]
+                    self.rrt_parents[nb] = new_idx
+                    self._propagate_cost_delta(nb, rewired_cost - old_cost)
+                    self.rrt_rewire_count_last += 1
+                    self.rrt_recent_new_edges.append((new_node.copy(), nb_node.copy()))
+
+            # 嘗試接到目標
+            if np.linalg.norm(new_node - self.goal_pos) <= self.rrt_goal_threshold:
+                if self._segment_collision_free(new_node, self.goal_pos):
+                    # 目標可達時，僅在路徑品質更好才更新 best
+                    rrt_path = self._backtrack_rrt_path(new_idx)
+                    wp = self._path_to_fixed_waypoints(rrt_path)
+                    candidate = wp.reshape(-1)
+                    fit = self.fitness_function(candidate)
+                    if fit < self.global_best_fitness:
+                        self.global_best_fitness = fit
+                        self.global_best = candidate.copy()
+                        self.global_best_path = [np.array(p, dtype=float) for p in rrt_path]
+                        self.rrt_best_goal_idx = new_idx
+                    self.goal_reached = True
+                    break
+
+        self.optim_iteration += 1
+        self.particles[:, :] = self.global_best[np.newaxis, :]
+
+    def inject_diversity(self, fraction=0.25):
+        """停滯時往樹中補充隨機節點，增加探索能力。"""
+        count = max(5, int(self.num_particles * fraction))
+        for _ in range(count):
+            sample = self._sample_rrt_target()
+            near_idx = self._nearest_rrt_index(sample)
+            near = self.rrt_nodes[near_idx]
+            new_node = self._steer_towards(near, sample)
+            if self._segment_collision_free(near, new_node):
+                self.rrt_nodes.append(new_node)
+                self.rrt_parents.append(near_idx)
+                self.rrt_costs.append(self.rrt_costs[near_idx] + np.linalg.norm(new_node - near))
 
     def refresh_obstacle_cache(self):
-        """快取 3D 膨脹障礙物包圍盒，讓 PSO 可直接搜尋不同飛行高度。"""
+        """快取 3D 膨脹障礙物包圍盒，讓 AI 可直接搜尋不同飛行高度。"""
         if not getattr(self, "obstacles", None):
             self.obs_bounds_xyz = np.empty((0, 6), dtype=float)
             return
@@ -977,108 +1230,19 @@ class PSOWarehouseRealObstacles:
         )
 
     def update_fitness(self):
-        """全吐量化批次適應度更新"""
-        fitness_all = self.batch_fitness(self.particles)  # (N,)
-
-        improved = fitness_all < self.personal_best_fitness
-        self.personal_best[improved] = self.particles[improved].copy()
-        self.personal_best_fitness[improved] = fitness_all[improved]
-
-        best_idx = np.argmin(self.personal_best_fitness)
-        if self.personal_best_fitness[best_idx] < self.global_best_fitness:
-            self.global_best = self.personal_best[best_idx].copy()
-            self.global_best_fitness = self.personal_best_fitness[best_idx]
-            best_pts = self.global_best.reshape(self.num_waypoints, 3)
-            self.global_best_path = [self.start_pos.copy()] + list(best_pts) + [self.goal_pos.copy()]
-
-        # 檢查終點是否到達
-        best_pts = self.global_best.reshape(self.num_waypoints, 3)
-        dist_to_goal = np.linalg.norm(best_pts[-1] - self.goal_pos)
-        if dist_to_goal <= self.goal_tolerance:
-            if not self.goal_reached:
-                print(f"已達到終點要求（{self.goal_tolerance}m 容差）：{self.global_best}")
-            self.goal_reached = True
+        """保留舊介面；AI 版本不需分離式 fitness 更新。"""
+        return
 
     def update_particles(self):
-        """全向量化粒子更新，包含 waypoint z 搜尋。"""
-        N = self.num_particles
+        """保留舊介面；AI 版本改為 RRT 擴展一步。"""
+        self.update_neural_optimizer()
 
-        # 動態 PSO 係數：前期高探索、後期高收斂
-        progress = min(1.0, self.pso_iteration / max(float(self.pso_max_iterations), 1.0))
-        w = 0.9 - 0.5 * progress
-        c1 = 2.4 - 1.2 * progress
-        c2 = 1.0 + 1.2 * progress
-        vmax = 0.8 - 0.4 * progress
-        self.pso_iteration += 1
-
-        r1 = np.random.random((N, self.particle_dim))
-        r2 = np.random.random((N, self.particle_dim))
-
-        cognitive = c1 * r1 * (self.personal_best - self.particles)
-        social = c2 * r2 * (self.global_best - self.particles)
-        self.velocities = w * self.velocities + cognitive + social
-
-        bad_vel = ~np.isfinite(self.velocities).all(axis=1)
-        if bad_vel.any():
-            self.velocities[bad_vel] = np.random.uniform(-0.1, 0.1, (bad_vel.sum(), self.particle_dim))
-
-        np.clip(self.velocities, -vmax, vmax, out=self.velocities)
-        self.particles += self.velocities
-
-        bad_pos = ~np.isfinite(self.particles).all(axis=1)
-        for i in np.where(bad_pos)[0]:
-            for j in range(self.num_waypoints):
-                self.particles[i, j * 3] = np.random.uniform(self.space_min_x, self.space_max_x)
-                self.particles[i, j * 3 + 1] = np.random.uniform(self.space_min_y, self.space_max_y)
-                self.particles[i, j * 3 + 2] = np.random.uniform(self.planning_z_min, self.planning_z_max)
-
-        x_idx = np.arange(0, self.particle_dim, 3)
-        y_idx = np.arange(1, self.particle_dim, 3)
-        z_idx = np.arange(2, self.particle_dim, 3)
-        self.particles[:, x_idx] = np.clip(self.particles[:, x_idx], self.space_min_x, self.space_max_x)
-        self.particles[:, y_idx] = np.clip(self.particles[:, y_idx], self.space_min_y, self.space_max_y)
-        self.particles[:, z_idx] = np.clip(self.particles[:, z_idx], self.planning_z_min, self.planning_z_max)
-
-        trial_fitness = self.batch_fitness(self.particles)
-        colliding = trial_fitness > 1e6
-        if colliding.any():
-            idx = np.where(colliding)[0]
-            alphas = np.linspace(1.0 / (self.num_waypoints + 1), self.num_waypoints / (self.num_waypoints + 1), self.num_waypoints)
-            guide_x = (1.0 - alphas) * self.start_pos[0] + alphas * self.goal_pos[0]
-            guide_y = (1.0 - alphas) * self.start_pos[1] + alphas * self.goal_pos[1]
-            guide_z = (1.0 - alphas) * self.start_pos[2] + alphas * self.goal_pos[2]
-            repair_std = max((self.space_max_x - self.space_min_x) * 0.25,
-                             (self.space_max_y - self.space_min_y) * 0.25, 2.0)
-            noise_x = np.random.normal(0.0, repair_std, size=(len(idx), self.num_waypoints))
-            noise_y = np.random.normal(0.0, repair_std, size=(len(idx), self.num_waypoints))
-            noise_z = np.random.normal(0.0, 0.3, size=(len(idx), self.num_waypoints))
-            self.particles[idx[:, None], x_idx] = np.clip(guide_x + noise_x, self.space_min_x, self.space_max_x)
-            self.particles[idx[:, None], y_idx] = np.clip(guide_y + noise_y, self.space_min_y, self.space_max_y)
-            self.particles[idx[:, None], z_idx] = np.clip(guide_z + noise_z, self.planning_z_min, self.planning_z_max)
-
-    def inject_diversity(self, fraction=0.2):
-        """停滯時重置部分粒子到全域空間，避免整群陷入局部極值。"""
-        count = max(1, int(self.num_particles * fraction))
-        idx = np.random.choice(self.num_particles, size=count, replace=False)
-
-        x_idx = np.arange(0, self.particle_dim, 3)
-        y_idx = np.arange(1, self.particle_dim, 3)
-        z_idx = np.arange(2, self.particle_dim, 3)
-
-        self.particles[idx[:, None], x_idx] = np.random.uniform(
-            self.space_min_x, self.space_max_x, size=(count, self.num_waypoints)
-        )
-        self.particles[idx[:, None], y_idx] = np.random.uniform(
-            self.space_min_y, self.space_max_y, size=(count, self.num_waypoints)
-        )
-        self.particles[idx[:, None], z_idx] = np.random.uniform(
-            self.planning_z_min, self.planning_z_max, size=(count, self.num_waypoints)
-        )
-        self.velocities[idx] = np.random.uniform(-0.2, 0.2, size=(count, self.particle_dim))
-        self.personal_best_fitness[idx] = np.inf
+    def _legacy_inject_diversity_disabled(self, fraction=0.2):
+        """舊 PSO 版本保留占位；AI 版本不使用。"""
+        return
 
     def visualize_pso_step(self):
-        """視覺化 PSO 當前狀態"""
+        """視覺化 AI 當前最佳化狀態"""
         self.visualize_frame_count += 1
         # 僅在啟動初期低頻重試，避免每幀重設導致閃爍
         if self.viewport_retry_count < 10 and (self.visualize_frame_count % 30 == 0):
@@ -1089,6 +1253,50 @@ class PSOWarehouseRealObstacles:
             self.viewport_retry_count += 1
         self.update_follow_camera_view()
         self.draw.clear_points()
+
+        # --- RRT*/RRT 計算可視化：全樹骨架 + 本輪新增/rewire ---
+        if hasattr(self, 'rrt_nodes') and len(self.rrt_nodes) > 1:
+            # 1) 全樹骨架（灰色）
+            tree_pts = []
+            tree_cols = []
+            tree_sz = []
+            edge_stride = max(1, len(self.rrt_nodes) // 1200)
+            for i in range(1, len(self.rrt_nodes), edge_stride):
+                p = self.rrt_parents[i]
+                if p < 0:
+                    continue
+                a = np.array(self.rrt_nodes[p], dtype=float)
+                b = np.array(self.rrt_nodes[i], dtype=float)
+                for t in (0.0, 0.5, 1.0):
+                    q = a + t * (b - a)
+                    tree_pts.append(q.tolist())
+                    tree_cols.append([0.55, 0.55, 0.55, 0.35])
+                    tree_sz.append(2.5)
+            if tree_pts:
+                self.draw.draw_points(tree_pts, tree_cols, tree_sz)
+
+            # 2) 本輪新增/rewire 邊（亮青色）
+            recent_edge_pts = []
+            recent_edge_cols = []
+            recent_edge_sz = []
+            for a, b in getattr(self, 'rrt_recent_new_edges', []):
+                a = np.array(a, dtype=float)
+                b = np.array(b, dtype=float)
+                for t in (0.0, 0.33, 0.66, 1.0):
+                    q = a + t * (b - a)
+                    recent_edge_pts.append(q.tolist())
+                    recent_edge_cols.append([0.2, 0.95, 1.0, 0.85])
+                    recent_edge_sz.append(5.0)
+            if recent_edge_pts:
+                self.draw.draw_points(recent_edge_pts, recent_edge_cols, recent_edge_sz)
+
+            # 3) 本輪新增節點（黃色）
+            if getattr(self, 'rrt_recent_new_nodes', []):
+                self.draw.draw_points(
+                    [np.array(n, dtype=float).tolist() for n in self.rrt_recent_new_nodes],
+                    [[1.0, 0.95, 0.1, 1.0]] * len(self.rrt_recent_new_nodes),
+                    [10.0] * len(self.rrt_recent_new_nodes),
+                )
 
         # 繪製障礙物邊界 + 禁飛紅框
         drone_z = float(self.start_pos[2])
@@ -1250,20 +1458,16 @@ class PSOWarehouseRealObstacles:
         self.draw.draw_points(elastic_points, elastic_colors, elastic_sizes)
 
     def reset_pso(self):
-        """重置 PSO 狀態（保留起終點，重新計算動態轉折點）"""
+        """重置 AI 最佳化狀態（保留起終點，重新初始化 RRT 樹）。"""
         self.compute_dynamic_waypoints()
-        self.pso_iteration = 0
-        
-        # 初始化全局最佳為第一個粒子
-        self.global_best = self.particles[0].copy()
-        self.global_best_fitness = self.fitness_function(self.global_best)
-        
+        self.optim_iteration = 0
+
         # 路徑歷史
         best_pts = self.global_best.reshape(self.num_waypoints, 3)
         self.global_best_path = [self.start_pos.copy()] + list(best_pts) + [self.goal_pos.copy()]
         self.goal_reached = False
         self.path_visible = False
-        print("PSO 狀態已重置，準備新一輪優化。")
+        print("AI 最佳化狀態已重置，準備新一輪優化。")
 
     def check_path_collision(self):
         """使用精確 3D Slab Method 驗證當前最佳路徑每條線段是否穿越障礙物。
@@ -1344,10 +1548,10 @@ class PSOWarehouseRealObstacles:
     def run(self):
         """主運行循環"""
         print("=" * 60)
-        print("PSO 倉庫路徑規劃模擬（真實障礙物偵測版）已準備就緒！")
+        print("AI 倉庫路徑規劃模擬（RRT 最佳化版）已準備就緒！")
         print(f"場景：Warehouse with Shelves")
         print(f"障礙物數量：{len(self.obstacles)} 個（從場景自動偵測）")
-        print(f"PSO 參數：{self.num_particles} 個粒子，1000 次迭代")
+        print(f"AI 參數：每輪 {self.num_particles} 個網路候選，500 次迭代")
         print(f"起點：{self.start_pos}  →  終點：{self.goal_pos}")
         print(f"規劃高度範圍：Z:[{self.planning_z_min:.2f}, {self.planning_z_max:.2f}]")
         print(f"目標容差：{self.goal_tolerance}m")
@@ -1358,38 +1562,41 @@ class PSOWarehouseRealObstacles:
 
         while simulation_app.is_running():
             simulation_count += 1
-            print(f"\n=== 開始第 {simulation_count} 輪模擬 ===")
+            print(f"\n=== 開始第 {simulation_count} 輪模擬（AI 路徑搜尋）===")
 
-            # 每輪分檔：從 PSO 計算開始錄到本輪結束（含粒子跳動與飛行）
+            # 每輪分檔：從 AI 計算開始錄到本輪結束
             self.stop_video_recording()
             self.start_video_recording(simulation_count)
 
             self.reset_pso()
-            self.timeline.pause() # 暫停物理引擎，直到 PSO 算完
-            print("等待 PSO 計算路徑，物理引擎暫時停用")
+            self.timeline.pause() # 暫停物理引擎，直到 AI 算完
+            print("等待 RRT 計算路徑，物理引擎暫時停用")
 
             step_count = 0
             max_steps = 500
-            self.pso_max_iterations = max_steps
-            visualize_interval = 40
-            update_interval = 3
+            self.optim_max_iterations = max_steps
+            visualize_interval = 10
+            update_interval = 1
             best_checkpoint = np.inf
             stagnant_count = 0
 
             try:
                 while simulation_app.is_running() and step_count < max_steps:
-                    # ===== PSO 路徑最佳化開始 =====
+                    # ===== RRT 路徑最佳化開始 =====
                     if step_count % update_interval == 0:
-                        self.update_particles()
-                        self.update_fitness()
+                        self.update_neural_optimizer()
 
                     if step_count % visualize_interval == 0:
                         self.visualize_pso_step()
                         simulation_app.update()
 
-                    if step_count % 100 == 0:
+                    if step_count % 20 == 0:
                         dist_to_goal = np.linalg.norm(self.global_best.reshape(self.num_waypoints, 3)[-1] - self.goal_pos)
-                        print(f"PSO 迭代步數: {step_count}, "
+                        node_count = len(self.rrt_nodes) if hasattr(self, 'rrt_nodes') else 0
+                        print(f"AI 迭代步數: {step_count}, "
+                              f"節點數: {node_count}, "
+                              f"本輪新增: {getattr(self, 'rrt_added_last', 0)}, "
+                              f"本輪rewire: {getattr(self, 'rrt_rewire_count_last', 0)}, "
                               f"最佳適應度: {self.global_best_fitness:.3f}, "
                               f"距目標: {dist_to_goal:.3f}m")
 
@@ -1409,9 +1616,9 @@ class PSOWarehouseRealObstacles:
                             stagnant_count += 1
                         if stagnant_count >= 2 and stagnant_count < 4:
                             self.inject_diversity(fraction=0.2)
-                            print("PSO 停滯，注入 20% 全域粒子以增加探索能力。")
+                            print("AI 停滯，注入參數擾動以增加探索能力。")
                         if stagnant_count >= 4:
-                            print("PSO 長時間無顯著改善，提前結束本輪優化。")
+                            print("AI 長時間無顯著改善，提前結束本輪優化。")
                             break
 
                     step_count += 1
@@ -1429,12 +1636,12 @@ class PSOWarehouseRealObstacles:
                 self.path_visible = True
                 self.visualize_pso_step()
                 
-                print(f"=== 第 {simulation_count} 輪 PSO 最佳化結束 ===")
+                print(f"=== 第 {simulation_count} 輪 AI 最佳化結束 ===")
                 print(f"最終最佳適應度: {self.global_best_fitness:.3f}")
 
                 # ══════════════════════════════════════════════════════
                 # 飛行前路徑安全驗證：精確 Slab Method 碰撞檢測
-                # 若路徑仍穿越障礙物 → 重跑 PSO（最多 MAX_RETRY 次）
+                # 若路徑仍穿越障礙物 → 重跑 AI 最佳化（最多 MAX_RETRY 次）
                 # 完全無碰撞才允許起飛，否則最終使用最佳可得路徑並警告
                 # ══════════════════════════════════════════════════════
                 MAX_RETRY = 5
@@ -1444,17 +1651,14 @@ class PSOWarehouseRealObstacles:
                 while has_collision and retry_count < MAX_RETRY:
                     retry_count += 1
                     print(f"\n⚠ [路徑驗證失敗] 最佳路徑仍有 {col_segs} 段穿越障礙物！")
-                    print(f"  → 第 {retry_count}/{MAX_RETRY} 次重新搜尋（重新隨機初始化粒子）...")
+                    print(f"  → 第 {retry_count}/{MAX_RETRY} 次重新搜尋（重新初始化 RRT 樹）...")
 
-                    # 重新隨機初始化粒子群（保留起終點），避免陷入同一局部極值
+                    # 重新初始化 RRT 樹（保留起終點）
                     self.compute_dynamic_waypoints()
-                    self.global_best = self.particles[0].copy()
-                    self.global_best_fitness = self.fitness_function(self.global_best)
 
                     retry_steps = 500
                     for _ in range(retry_steps):
-                        self.update_particles()
-                        self.update_fitness()
+                        self.update_neural_optimizer()
                         if not simulation_app.is_running():
                             break
                         if _ % 50 == 0:
@@ -1484,6 +1688,16 @@ class PSOWarehouseRealObstacles:
                 else:
                     print(f"\n✓ [路徑驗證通過] 路徑完全無碰撞！準備起飛。")
 
+                # 飛行前圓滑化：對驗證通過的路徑做 Bezier 平滑，若平滑後碰撞則回退原路徑
+                raw_path_points = [np.array(p, dtype=float) for p in self.global_best_path]
+                smoothed_path_points = self.smooth_path_with_bezier(raw_path_points, samples_per_seg=8, smooth_factor=1.0)
+                if self._polyline_collision_free(smoothed_path_points):
+                    self.global_best_path = [np.array(p, dtype=float) for p in smoothed_path_points]
+                    print(f"✓ 已套用貝茲曲線圓滑化（點數: {len(raw_path_points)} -> {len(self.global_best_path)}）")
+                else:
+                    self.global_best_path = raw_path_points
+                    print("⚠ 貝茲曲線圓滑化後出現碰撞，已回退原始路徑。")
+
                 print("開始生成飛行軌跡檔案並準備無人機飛行...")
 
                 # ====== 梯形速度剖面軌跡生成 ======
@@ -1495,9 +1709,9 @@ class PSOWarehouseRealObstacles:
                 traj = []
                 t_total = 0.0
                 dt      = 0.02    # 50Hz 控制頻率
-                v_max   = 2.0     # 最高巡航速度 (m/s)
-                v_min   = 0.3     # 轉彎/接近終點時的最低速度 (m/s)
-                a_max   = 1.0     # 最大加速度 / 減速度 (m/s²)
+                v_max   = 3.2     # 最高巡航速度 (m/s)（加快）
+                v_min   = 0.5     # 轉彎/接近終點時的最低速度 (m/s)（加快）
+                a_max   = 2.0     # 最大加速度 / 減速度 (m/s²)（加快）
                 path_points = self.global_best_path
                 n_pts = len(path_points)
 
@@ -1615,7 +1829,7 @@ class PSOWarehouseRealObstacles:
                 
                 # NonlinearController 讀檔是以 flip axis=0 反轉序列的，所以寫檔時要先反轉
                 traj_np = np.flip(np.array(traj), axis=0)
-                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pso_flight_trajectory.csv")
+                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_flight_trajectory.csv")
                 np.savetxt(csv_path, traj_np, delimiter=',')
                 
                 # 更新無人機控制器
@@ -1630,13 +1844,27 @@ class PSOWarehouseRealObstacles:
                 
                 # 恢復模擬，準備看無人機飛行
                 self.world.reset() # 確保無人機回到初始點
+                # 每次起飛前強制把無人機放到「當前 start_pos」，避免 reset 回到舊起點
+                try:
+                    if hasattr(self.drone, "set_world_pose"):
+                        self.drone.set_world_pose(
+                            self.start_pos.tolist(),
+                            Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
+                        )
+                        # 讓 pose 寫入在下一步生效
+                        for _ in range(2):
+                            self.world.step(render=False)
+                    else:
+                        print("⚠ 無人機物件不支援 set_world_pose，可能無法重置到新起點。")
+                except Exception as pose_err:
+                    print(f"⚠ 起飛前重設無人機位置失敗: {pose_err}")
                 self.timeline.play()
 
                 # 保持畫面與物理更新直到迴圈關閉，同時監控碰撞
                 collision_occurred = False
                 reached_goal = False
                 while simulation_app.is_running():
-                    # self.update_particles() 取消註解這行會讓粒子繼續動，我們現在不需要
+                    # self.update_neural_optimizer() 取消註解這行會讓 RRT 持續擴展，我們現在不需要
                     self.visualize_pso_step()
                     self.world.step(render=True)
                     self.update_follow_camera_view()
@@ -1691,9 +1919,9 @@ class PSOWarehouseRealObstacles:
                         
                 # 如果是發生碰撞而破壞內部迴圈，不要跳出外面的大迴圈（即不要執行 break）
                 if collision_occurred:
-                    print("重置物理世界，準備重新啟動 PSO...")
+                    print("重置物理世界，準備重新啟動 AI 最佳化...")
                     self.world.reset()
-                    continue  # continue 外層大迴圈重新跑 PSO
+                    continue  # continue 外層大迴圈重新跑 AI 最佳化
                 else:
                     if reached_goal:
                         print("本輪已完成到點並存檔。")
@@ -1716,7 +1944,6 @@ class PSOWarehouseRealObstacles:
                             print(f"新起點: {self.start_pos}")
                             print(f"新終點: {self.goal_pos}")
 
-                            # 嘗試把無人機放到新起點，若 API 不支援則至少重置世界
                             try:
                                 self.timeline.stop()
                                 self.world.reset()
@@ -1725,6 +1952,8 @@ class PSOWarehouseRealObstacles:
                                         self.start_pos.tolist(),
                                         Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
                                     )
+                                    for _ in range(2):
+                                        self.world.step(render=False)
                             except Exception as pose_err:
                                 print(f"⚠ 無法直接重設無人機到新起點: {pose_err}")
 
@@ -1746,10 +1975,10 @@ class PSOWarehouseRealObstacles:
                 break
 
         self.stop_video_recording()
-        carb.log_warn("PSOWarehouseRealObstacles Simulation App is closing.")
+        carb.log_warn("AIWarehouseRoutePlanner Simulation App is closing.")
         simulation_app.close()
 
 
 if __name__ == "__main__":
-    sim = PSOWarehouseRealObstacles()
+    sim = AIWarehouseRoutePlanner()
     sim.run()
