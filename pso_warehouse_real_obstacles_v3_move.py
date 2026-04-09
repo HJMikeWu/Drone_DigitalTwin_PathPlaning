@@ -698,9 +698,13 @@ class PSOWarehouseRealObstacles:
             purpose_tokens = [UsdGeom.Tokens.default_]
             bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), purpose_tokens)
 
-            # 移除 Beam/Frame，避免把高處桁架納入低空路徑規劃
-            obstacle_keywords = ['Shelf', 'Pallet', 'Wall', 'Pillar', 'Rack', 'Bracket']
-            shelf_like_keywords = {'Shelf', 'Pallet', 'Rack'}
+            # 白名單：僅掃牆壁/貨架/推車；黑名單：排除地板、燈具、桁架等無關物件
+            allowed_keywords = {'wall', 'shelf', 'rack', 'cart', 'trolley', 'forklift'}
+            shelf_like_keywords = {'shelf', 'rack'}
+            reject_keywords = {
+                'floor', 'ground', 'ceiling', 'light', 'lamp', 'truss', 'beam',
+                'frame', 'roof', 'glass', 'window', 'door', 'camera', 'ceilinglight'
+            }
             shelf_group_bbox = {}
             detected_count = 0
 
@@ -708,14 +712,20 @@ class PSOWarehouseRealObstacles:
                 if prim.GetTypeName() not in ["Mesh", "Cube", "Cylinder"]:
                     continue
 
+                prim_path_lower = str(prim.GetPath()).lower()
+                if any(bad in prim_path_lower for bad in reject_keywords):
+                    continue
+
                 is_obstacle = False
                 hit_keyword = None
                 hit_group_path = None
                 curr_p = prim
                 while curr_p:
-                    p_name = curr_p.GetName()
-                    for kw in obstacle_keywords:
-                        if kw in p_name:
+                    p_name_lower = curr_p.GetName().lower()
+                    if any(bad in p_name_lower for bad in reject_keywords):
+                        break
+                    for kw in allowed_keywords:
+                        if kw in p_name_lower:
                             is_obstacle = True
                             hit_keyword = kw
                             hit_group_path = str(curr_p.GetPath())
