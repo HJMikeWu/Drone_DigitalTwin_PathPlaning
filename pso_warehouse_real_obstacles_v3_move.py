@@ -98,42 +98,40 @@ class PSOWarehouseRealObstacles:
 
     def __init__(self):
         try:
-            print("載入 Pegasus 模組...")
+            print(" Pegasus ...")
             from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS
             from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
             from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 
             self.timeline = timeline
 
-            print("初始化 Pegasus Interface...")
+            print(" Pegasus Interface...")
             self.pg = PegasusInterface()
 
-            print("初始化 World...")
+            print(" World...")
             self.pg._world = World(**self.pg._world_settings)
             self.world = self.pg.world
-            print("World 初始化完成")
+            print("World ")
 
-            print("載入倉庫場景...")
+            print("Initializing...")
             self.pg.load_environment(SIMULATION_ENVIRONMENTS["Warehouse with Shelves"])
-            print("倉庫場景載入完成")
+            print("")
 
-            # 等待場景完全載入 —— 讓 USD Stage 完成所有資產解析
-            print("等待場景資產完全解析...")
+            #  ——  USD Stage 
+            print("Initializing...")
             for _ in range(30):
                 simulation_app.update()
-            print("場景資產解析完成")
+            print("")
 
             # Use the global draw interface
             self.draw = draw_interface
-            print("Debug draw 初始化完成")
+            print("Debug draw ")
 
-            # ====== 核心改進：從真實場景偵測障礙物 ======
             print("=" * 60)
-            print("開始從 USD Stage 偵測真實場景障礙物...")
+            print(" USD Stage ...")
             print("=" * 60)
             self.obstacle_penalty = 500.0
-            self.safety_margin = 1.0  # 增加安全邊距，預留轉彎慣性空間
-            # 先初始化無人機體積參數，供起終點合法性檢查使用
+            self.safety_margin = 1.0
             self.drone_body_radius = 0.275
             self.drone_height = 0.30
             self.goal_radius = self.drone_body_radius
@@ -143,28 +141,28 @@ class PSOWarehouseRealObstacles:
             self.obstacles = self.detect_real_obstacles()
 
             if not self.obstacles:
-                print("⚠ 警告：未偵測到任何障礙物！PSO 將在無障礙空間中運行。")
+                print("WARNING: No obstacles detected. PSO will run in obstacle-free space.")
             else:
-                print(f"✓ 共偵測到 {len(self.obstacles)} 個真實障礙物")
+                print(f"Detected {len(self.obstacles)} obstacles.")
 
-            print("開始掃描空間並隨機生成起點與終點...")
+            print("Initializing...")
             self.start_pos, self.goal_pos = self.generate_random_positions()
-            print(f"✓ 生成起點: {self.start_pos}")
-            print(f"✓ 生成終點: {self.goal_pos}")
+            print(f"Generated start position: {self.start_pos}")
+            print(f"Generated goal position: {self.goal_pos}")
 
-            print("創建 Iris 無人機...")
+            print(" Iris ...")
             import sys, os
             sys.path.insert(0, '/home/mirdc_ju/PegasusSimulator/examples/utils')
             from nonlinear_controller import NonlinearController
             
             config_multirotor = MultirotorConfig()
             
-            # 使用 Pegasus 範例提供的高級 NonlinearController
-            # 初始時先不給軌跡，等 PSO 運算完再指定
+            #  Pegasus  NonlinearController
+            # Core PSO optimization parameters
             controller = NonlinearController(
                 trajectory_file=None,
-                Kp=[15.0, 15.0, 15.0],  # 提高位置增益 (Kp) 讓軌跡追蹤更緊密
-                Kd=[10.0, 10.0, 10.0]   # 微調微分增益避免震盪
+                Kp=[15.0, 15.0, 15.0],  # Proportional gains (Kp)
+                Kd=[10.0, 10.0, 10.0]
             )
             config_multirotor.backends = [controller]
             config_multirotor.init_pos = self.start_pos.tolist()
@@ -177,15 +175,15 @@ class PSOWarehouseRealObstacles:
                 Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
                 config=config_multirotor,
             )
-            print("Iris 無人機創建完成")
+            print("Iris ")
 
-            print("等待無人機初始化...")
+            print("Initializing...")
             for _ in range(10):
                 self.world.step(render=False)
-            print("無人機初始化等待完成")
+            print("")
 
             self.world.reset()
-            print("模擬環境重置完成")
+            print("")
 
             self.top_camera_path = "/World/TopViewCamera"
             self.follow_camera_path = "/World/DroneFollowCamera"
@@ -198,19 +196,19 @@ class PSOWarehouseRealObstacles:
             self.setup_dual_viewports()
 
         except Exception as e:
-            print(f"初始化過程中發生錯誤: {e}")
+            print(f"Error during initialization: {e}")
             import traceback
             traceback.print_exc()
             raise
 
-        # PSO 參數
-        self.num_particles = 60  # 降低粒子數以提升運算速度
-        self.goal_tolerance = 0.05  # 目標容差
+        # Core PSO optimization parameters
+        self.num_particles = 60
+        self.goal_tolerance = 0.05
         self.obs_bounds_xyz = np.empty((0, 6), dtype=float)
         self.refresh_obstacle_cache()
 
-        # num_waypoints 與粒子初始化將由 compute_dynamic_waypoints() 根據起終點距離與路徑複雜度決定
-        # 先給預設值讓後續 fitness_function 等方法可以正常存取
+        # num_waypoints will be set by compute_dynamic_waypoints()
+        # fitness_function uses this for particle dimension
         self.num_waypoints = 3
         self.particle_dim = self.num_waypoints * 3
         self.particles = np.zeros((self.num_particles, self.particle_dim))
@@ -227,7 +225,7 @@ class PSOWarehouseRealObstacles:
         self.pso_iteration = 0
         self.pso_max_iterations = 500
 
-        # 自動錄影狀態（_move 版本）
+        # Video recording settings (for _move version)
         self.recording_enabled = True
         self.recording_process = None
         self.recording_output_path = ""
@@ -235,12 +233,11 @@ class PSOWarehouseRealObstacles:
         self.recording_log_file = None
         self.recording_round_index = 0
 
-        # 起終點既定，實際動態計算需要多少轉折點
         self.compute_dynamic_waypoints()
 
         self.update_fitness()
 
-        print("場景建置完成，無人機已就緒。PSO 路徑規劃初始化完成。")
+        print("PSO initialization complete.")
 
     def ensure_camera_prim(self, camera_path):
         stage = omni.usd.get_context().get_stage()
@@ -249,14 +246,14 @@ class PSOWarehouseRealObstacles:
         return stage.GetPrimAtPath(camera_path)
 
     def setup_dual_viewports(self):
-        """建立雙 viewport：主視窗俯視圖，第二視窗為無人機第三人稱視角。"""
+        """Set up dual viewports: top-down main view and third-person chase view."""
         try:
             self.ensure_camera_prim(self.top_camera_path)
             self.ensure_camera_prim(self.follow_camera_path)
 
             self.top_view_window = get_active_viewport_window()
             if self.top_view_window is None:
-                print("⚠ 找不到主 viewport，略過雙視角設定。")
+                print("WARNING: No active viewport window found.")
                 return
 
             existing_windows = []
@@ -285,12 +282,12 @@ class PSOWarehouseRealObstacles:
                 camera_path=self.follow_camera_path,
                 viewport_api=self.follow_view_window.viewport_api,
             )
-            print("✓ 已建立雙 viewport：俯視圖 + 無人機第三人稱視角")
+            print("✓  viewport: + ")
         except Exception as e:
-            print(f"⚠ 雙 viewport 初始化失敗：{e}")
+            print(f"⚠  viewport :{e}")
 
     def enforce_embedded_split_layout(self):
-        """強制將右側 viewport 以 50% 比例內嵌到主 viewport，而非分頁。"""
+        """Dock the chase viewport on the right with 50% split ratio."""
         if self.layout_applied:
             return
         if not getattr(self, "top_view_window", None) or not getattr(self, "follow_view_window", None):
@@ -308,7 +305,7 @@ class PSOWarehouseRealObstacles:
             pass
 
     def set_top_view_camera(self, force=False):
-        """將主 viewport 設為 /OmniverseKit_Top。"""
+        """Set the main viewport camera to /OmniverseKit_Top when available."""
         if self.top_view_locked and not force:
             return
         try:
@@ -321,7 +318,7 @@ class PSOWarehouseRealObstacles:
                     viewport_api=self.top_view_window.viewport_api,
                 )
             else:
-                # fallback：若環境沒有內建 Top 相機，使用自建俯視相機
+                # Fallback when built-in top camera is unavailable.
                 focus_xy = (self.start_pos[:2] + self.goal_pos[:2]) / 2.0
                 eye = np.array([focus_xy[0], focus_xy[1], 42.0])
                 target = np.array([focus_xy[0], focus_xy[1], 0.0])
@@ -338,10 +335,10 @@ class PSOWarehouseRealObstacles:
                 )
             self.top_view_locked = True
         except Exception as e:
-            print(f"⚠ 設定俯視相機失敗：{e}")
+            print(f"WARNING: Failed to set top view camera: {e}")
 
     def update_follow_camera_view(self):
-        """更新無人機第三人稱跟拍相機。"""
+        """Update third-person chase camera from current drone pose."""
         if not getattr(self, "follow_view_window", None):
             return
 
@@ -354,8 +351,8 @@ class PSOWarehouseRealObstacles:
             drone_quat = current_pose[1]
             body_rotation = Rotation.from_quat([drone_quat[1], drone_quat[2], drone_quat[3], drone_quat[0]])
 
-            # 第三人稱：俯角加大到約 60~80 區間，並把鏡頭整體下移確保看見無人機
-            # 幾何上 eye->target 約為 dx=1.9, dz=-3.75，俯角約 arctan(3.75/1.9)=63°
+            # Keep a steep chase angle (roughly 60-80 degrees downward).
+            #  eye->target  dx=1.9, dz=-3.75, arctan(3.75/1.9)=63°
             backward_offset = body_rotation.apply(np.array([-2.0, 0.0, 0.75]))
             target_offset = body_rotation.apply(np.array([3.0, 0.0, -1.0]))
             eye = drone_pos + backward_offset
@@ -371,7 +368,7 @@ class PSOWarehouseRealObstacles:
             pass
 
     def _find_isaac_window_id(self):
-        """嘗試找到 Isaac Sim 視窗 ID（X11），找不到則回傳 None。"""
+        """Find Isaac Sim X11 window ID, or return None if unavailable."""
         search_cmds = [
             ["xdotool", "search", "--name", "Isaac Sim"],
             ["xdotool", "search", "--name", "isaac"],
@@ -395,7 +392,7 @@ class PSOWarehouseRealObstacles:
         return None
 
     def start_video_recording(self, round_index=1):
-        """以 ffmpeg 自動錄影 Isaac Sim 視窗（Linux/X11）。"""
+        """Start ffmpeg recording for Isaac Sim window on Linux/X11."""
         if not self.recording_enabled:
             return False
 
@@ -410,17 +407,17 @@ class PSOWarehouseRealObstacles:
         if not xdotool_bin:
             missing_tools.append("xdotool")
         if missing_tools:
-            print(f"⚠ 自動錄影未啟用，缺少工具: {', '.join(missing_tools)}")
+            print(f"WARNING: Missing required tools for recording: {', '.join(missing_tools)}")
             return False
 
         display = os.environ.get("DISPLAY")
         if not display:
-            print("⚠ 偵測不到 DISPLAY 環境變數，略過自動錄影。")
+            print("WARNING: DISPLAY environment variable not set.")
             return False
 
         window_id = self._find_isaac_window_id()
         if not window_id:
-            print("⚠ 找不到 Isaac Sim 視窗 ID，略過自動錄影（需安裝 xdotool 且視窗可被搜尋）。")
+            print("WARNING: Could not find Isaac Sim window ID (using xdotool).")
             return False
 
         movies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "movies")
@@ -452,13 +449,13 @@ class PSOWarehouseRealObstacles:
             )
             time.sleep(0.2)
             if self.recording_process.poll() is not None:
-                print(f"⚠ 錄影程序啟動後立即結束，請檢查記錄檔：{self.recording_log_path}")
+                print(f"WARNING: Recording process failed, check log: {self.recording_log_path}")
                 self.stop_video_recording()
                 return False
-            print(f"✓ 已啟動第 {int(round_index)} 輪視窗錄影：{self.recording_output_path}")
+            print(f"✓  {int(round_index)} :{self.recording_output_path}")
             return True
         except Exception as e:
-            print(f"⚠ 啟動錄影失敗：{e}")
+            print(f"WARNING: Failed to start video recording: {e}")
             self.recording_process = None
             self.recording_output_path = ""
             if self.recording_log_file:
@@ -470,7 +467,7 @@ class PSOWarehouseRealObstacles:
             return False
 
     def stop_video_recording(self):
-        """停止 ffmpeg 錄影並輸出檔案路徑。"""
+        """Stop ffmpeg recording and finalize output file."""
         if not self.recording_process:
             return
 
@@ -497,47 +494,35 @@ class PSOWarehouseRealObstacles:
                 self.recording_log_file = None
 
         if self.recording_output_path:
-            print(f"✓ 錄影已儲存：{self.recording_output_path}")
+            print(f"✓ :{self.recording_output_path}")
 
     def handle_manual_close(self):
-        """手動關閉 Isaac Sim 視窗時，立即停止錄影並存檔。"""
+        """Handle manual Isaac Sim window close by saving active recording."""
         if self.recording_process:
-            print("\n[手動關窗] 偵測到 Isaac Sim 視窗已關閉，停止錄影並儲存檔案。")
+            print("\nINFO: Isaac Sim window closed, saving recording.")
             self.stop_video_recording()
 
     def generate_random_positions(self):
-        """根據掃描到的障礙物與空間範圍，動態生成無碰撞的起點與終點"""
+        """Generate collision-free start/goal positions from detected workspace bounds."""
         fixed_z = 1.2
 
-        # 若有掃描到障礙物（含牆壁），用它們來決定可用空間範圍
+        # Infer usable bounds from detected obstacle set when available.
         if getattr(self, 'obstacles', None):
-            # ── 精確內部圖境計算 ────────────────────────────────────────
-            # 策略：找出「牆壁類」障礙物（SM_Wall 開頭）的 AABB，
-            # 取其「內側邊開」作為可飛行空間邊界。
-            # 资架(Shelf) 屬內部障礙物，不用來判斷空間圖境。
+            # Estimate interior flyable region from wall obstacle AABBs.
             wall_obs = [
                 obs for obs in self.obstacles
-                if obs[5] >= fixed_z  # 只取在飛行高度有體積的障礙物
+                if obs[5] >= fixed_z
             ]
             if wall_obs:
-                # 左側牆壁的右邊 (x_max) 中最大値 = 廚房左側內壁
-                # 右側牆壁的左邊 (x_min) 中最小値 = 廚房右側內壁
-                # 同理 Y 方向
-                #
-                # 符合倏嶺庺建筑片段內側空間的把握：
-                #   可行空間 X: [wall_x_max_left_side, wall_x_min_right_side]
-                #   可行空間 Y: [wall_y_max_bottom_side, wall_y_min_top_side]
-                #
-                # 简化商定聊區定義：取全部牆壁 AABB 的
-                #   min_x = 各牆壁 x_max 中的最小値 + margin
-                #   max_x = 各牆壁 x_min 中的最大値 - margin
-                # 如果小于預設則 fallback。
-                xs_lo = sorted(obs[0] for obs in wall_obs)  # x_min 排序
-                xs_hi = sorted(obs[3] for obs in wall_obs)  # x_max 排序
-                ys_lo = sorted(obs[1] for obs in wall_obs)  # y_min 排序
-                ys_hi = sorted(obs[4] for obs in wall_obs)  # y_max 排序
+                # X: [wall_x_max_left_side, wall_x_min_right_side]
+                # Y: [wall_y_max_bottom_side, wall_y_min_top_side]
+                # Fallback to global obstacle envelope if interior estimate fails.
+                xs_lo = sorted(obs[0] for obs in wall_obs)  # x_min 
+                xs_hi = sorted(obs[3] for obs in wall_obs)  # x_max 
+                ys_lo = sorted(obs[1] for obs in wall_obs)  # y_min 
+                ys_hi = sorted(obs[4] for obs in wall_obs)  # y_max
 
-                # 廚房内部 X 範圍：左側牆壁的 x_max (20%百分位) ~ 右側牆壁的 x_min (80%百分位)
+                # X-axis: from x_max (20%) to x_min (80%)
                 p20_x = xs_hi[int(len(xs_hi) * 0.20)]
                 p80_x = xs_lo[int(len(xs_lo) * 0.80)]
                 p20_y = ys_hi[int(len(ys_hi) * 0.20)]
@@ -546,9 +531,9 @@ class PSOWarehouseRealObstacles:
                 if p80_x > p20_x and p80_y > p20_y:
                     min_x, max_x = p20_x + 0.3, p80_x - 0.3
                     min_y, max_y = p20_y + 0.3, p80_y - 0.3
-                    print("掃描粒子分佈範圍成功：基於牆壁類障礙物的內部空間")
+                    print("Using interior flyable region from wall obstacles.")
                 else:
-                    # fallback：從外假定範圍
+                    # Fallback to global obstacle envelope.
                     all_x_min = min(obs[0] for obs in self.obstacles)
                     all_y_min = min(obs[1] for obs in self.obstacles)
                     all_x_max = max(obs[3] for obs in self.obstacles)
@@ -557,23 +542,23 @@ class PSOWarehouseRealObstacles:
                     max_x = all_x_max - 0.8
                     min_y = all_y_min + 0.8
                     max_y = all_y_max - 0.8
-                    print("掃描粒子分佈範圍失敗：牆壁類障礙物內部空間過小或無法判定，使用全部障礙物的外部邊界作為 fallback")
+                    print("Using global obstacle envelope as fallback.")
             else:
                 min_x, max_x = -20.0, 20.0
                 min_y, max_y = -20.0, 20.0
-                print("掃描粒子分佈範圍失敗：未偵測到有效牆壁類障礙物，使用預設範圍。")
+                print("Using default envelope for wall obstacles.")
         else:
-            # 預設範圍
+            # Default envelope when no obstacle scan is available.
             min_x, max_x = -20.0, 20.0
             min_y, max_y = -20.0, 20.0
-            print("掃描粒子分佈範圍失敗：未偵測到任何障礙物，使用預設範圍。")
+            print("Using default envelope when no obstacles available.")
 
         self.space_min_x = min_x
         self.space_max_x = max_x
         self.space_min_y = min_y
         self.space_max_y = max_y
 
-        print(f"正在範圍內找尋起止點: X:[{min_x:.1f}, {max_x:.1f}], Y:[{min_y:.1f}, {max_y:.1f}]")
+        print(f": X:[{min_x:.1f}, {max_x:.1f}], Y:[{min_y:.1f}, {max_y:.1f}]")
 
         max_attempts = 5000
         start_pos = None
@@ -603,21 +588,21 @@ class PSOWarehouseRealObstacles:
             break
 
         if start_pos is None or goal_pos is None:
-            print("⚠ 無法在安全範圍內找到起點或終點，改用預設備援位置。")
+            print("WARNING: Failed to generate valid positions, using fallback.")
             start_pos = np.array([min_x + 1.0, min_y + 1.0, fixed_z])
             goal_pos = np.array([max_x - 1.0, max_y - 1.0, fixed_z])
 
         return start_pos, goal_pos
 
     def is_valid_position(self, pos, buffer=0.2):
-        """檢查位置是否遠離任意 3D 障礙物，考慮無人機體積和安全邊距。"""
+        """Validate whether a candidate position is clear of relevant 3D obstacles."""
         drone_z = pos[2]
         h_half = self.drone_height / 2.0
         drone_z_min = drone_z - h_half
         drone_z_max = drone_z + h_half
         for obstacle in self.obstacles:
             obs_x, obs_y, obs_z_min, obs_x_max, obs_y_max, obs_z_max = obstacle
-            # 只把「與無人機垂直包絡重疊」的障礙物視為有效阻擋
+            # Only consider obstacles overlapping drone vertical envelope.
             if obs_z_max < drone_z_min or obs_z_min > drone_z_max:
                 continue
             dx = max(obs_x - pos[0], pos[0] - obs_x_max, 0)
@@ -628,7 +613,7 @@ class PSOWarehouseRealObstacles:
         return True
 
     def compute_dynamic_waypoints(self):
-        """依據起終點距離與障礙物複雜度決定轉折點數，並初始化粒子群。"""
+        """Select waypoint count from path complexity and initialize particle state."""
         straight_distance = np.linalg.norm(self.start_pos[:2] - self.goal_pos[:2])
 
         if straight_distance < 6.0:
@@ -652,9 +637,7 @@ class PSOWarehouseRealObstacles:
         self.particles[:, 1::3] = np.random.uniform(self.space_min_y, self.space_max_y, size=(self.num_particles, self.num_waypoints))
         self.particles[:, 2::3] = np.random.uniform(self.planning_z_min, self.planning_z_max, size=(self.num_particles, self.num_waypoints))
 
-        # 多數粒子以「起點到終點連線」附近初始化，減少早期無效探索
-        # 少數粒子（20%）以「起點→終點連線」附近初始化，確保直線方向有粒子作為種子；
-        # 其餘 80% 保持前面的全場域均勻分佈，讓 PSO 自由探索整個空間
+        # Seed some particles near start-goal line and keep broad global exploration.
         guided_n = int(self.num_particles * 0.2)
         if guided_n > 0:
             alphas = np.linspace(1.0 / (self.num_waypoints + 1), self.num_waypoints / (self.num_waypoints + 1), self.num_waypoints)
@@ -662,7 +645,7 @@ class PSOWarehouseRealObstacles:
                 (1.0 - alphas) * self.start_pos[0] + alphas * self.goal_pos[0],
                 (1.0 - alphas) * self.start_pos[1] + alphas * self.goal_pos[1],
             ], axis=1)
-            # noise std 放大到場域寬度的 1/4，讓種子粒子也有足夠擴散
+            # Larger noise keeps seeded particles sufficiently diverse.
             space_w = max(self.space_max_x - self.space_min_x, self.space_max_y - self.space_min_y)
             noise_std = max(space_w * 0.25, 2.0)
             noise = np.random.normal(0.0, noise_std, size=(guided_n, self.num_waypoints, 2))
@@ -681,7 +664,7 @@ class PSOWarehouseRealObstacles:
         self.global_best_path = [self.start_pos.copy()] + list(self.global_best.reshape(self.num_waypoints, 3)) + [self.goal_pos.copy()]
 
     def refresh_obstacle_cache(self):
-        """快取 3D 膨脹障礙物包圍盒，讓 PSO 可直接搜尋不同飛行高度。"""
+        """Cache inflated 3D obstacle bounds for fast PSO collision evaluation."""
         if not getattr(self, "obstacles", None):
             self.obs_bounds_xyz = np.empty((0, 6), dtype=float)
             return
@@ -704,10 +687,9 @@ class PSOWarehouseRealObstacles:
         self.obs_bounds_xyz = np.stack([ox, oy, oz, oxw, oyh, ozh], axis=1)
 
     def detect_real_obstacles(self):
-        """
-        從 USD Stage 遞迴偵測障礙物。
-        貨架/棧板/貨架架體以「2D footprint + 無限高牆面」建模，強制走走道。
-        並過濾高空桁架類幾何，避免無人機低空規劃被無關障礙影響。
+        """Detect real obstacles recursively from USD Stage.
+        Model shelf-like structures as 2D footprints with effectively infinite height
+        to enforce aisle routing, while filtering irrelevant high-altitude geometry.
         """
         obstacles = []
         try:
@@ -717,12 +699,11 @@ class PSOWarehouseRealObstacles:
                 return obstacles
 
             all_prims = list(stage.Traverse())
-            print(f"\n  [障礙物掃描] 共尋找到 {len(all_prims)} 個 prim，開始遞迴過濾...")
+            print(f"\nINFO: Scanning {len(all_prims)} primitives for obstacles...")
 
             purpose_tokens = [UsdGeom.Tokens.default_]
             bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), purpose_tokens)
 
-            # 白名單：僅掃牆壁/貨架/推車；黑名單：排除地板、燈具、桁架等無關物件
             allowed_keywords = {'wall', 'shelf', 'rack', 'cart', 'trolley', 'forklift'}
             shelf_like_keywords = {'shelf', 'rack'}
             reject_keywords = {
@@ -753,7 +734,7 @@ class PSOWarehouseRealObstacles:
                             is_obstacle = True
                             hit_keyword = kw
                             hit_group_path = str(curr_p.GetPath())
-                            # 貨架類群組向上收斂到 /World/layout 的直接子節點，避免同一貨架被拆成多組
+                            #  /World/layout ,
                             if hit_keyword in shelf_like_keywords:
                                 anchor = curr_p
                                 while anchor.GetParent() and str(anchor.GetParent().GetPath()) != "/World/layout":
@@ -783,14 +764,13 @@ class PSOWarehouseRealObstacles:
                     if width < 0.05 or height < 0.05:
                         continue
 
-                    # 僅保留與可規劃高度帶重疊的障礙物，讓中途抬升/下降也會被納入考慮
                     planning_band_min = self.planning_z_min - self.drone_height
                     planning_band_max = self.planning_z_max + self.drone_height
                     if z_max < planning_band_min or z_min > planning_band_max:
                         continue
 
                     if hit_keyword in shelf_like_keywords:
-                        # 將同一貨架群組的所有零件合併為單一 footprint，稍後轉成無限高牆面
+                        # Group shelf footprints
                         prev = shelf_group_bbox.get(hit_group_path)
                         if prev is None:
                             shelf_group_bbox[hit_group_path] = [x_min, y_min, x_max, y_max]
@@ -806,16 +786,15 @@ class PSOWarehouseRealObstacles:
                 except Exception:
                     continue
 
-            # 貨架群組以無限高牆面加入，避免路徑穿越貨架本體
             INF_Z = 1000.0
             for _, bbox in shelf_group_bbox.items():
                 x_min, y_min, x_max, y_max = bbox
                 obstacles.append([x_min, y_min, -INF_Z, x_max, y_max, INF_Z])
 
-            print(f"  ✓ 成功偵測到 {detected_count} 個障礙物零件，合併貨架後共 {len(obstacles)} 個規劃障礙物。")
+            print(f"INFO: Detected {detected_count} obstacle primitives, grouped into {len(obstacles)} obstacles.")
 
         except Exception as e:
-            print(f"✗ 障礙物偵測發生錯誤: {e}")
+            print(f"ERROR: Failed to detect real obstacles: {e}")
             import traceback
             traceback.print_exc()
             obstacles = []
@@ -823,15 +802,11 @@ class PSOWarehouseRealObstacles:
         return obstacles
 
     def fitness_function(self, position):
-        """單一粒子適應度（小數量評估時才呼叫）"""
+        """Compute scalar fitness for a single particle."""
         return self.batch_fitness(position.reshape(1, -1))[0]
 
     def batch_fitness(self, particles_batch):
-        """全向量化批次適應度計算：一次對所有粒子執行矩陣運算。
-
-        這個版本把 waypoint 的 z 一併納入搜尋，避免只在平面上繞路，
-        導致看似可行但實際穿過貨架或低矮障礙物上緣的情況。
-        """
+        """Vectorized batch fitness for all particles, including 3D waypoint search and penalties."""
         N = particles_batch.shape[0]
         nw = self.num_waypoints
         pts = particles_batch.reshape(N, nw, 3)
@@ -937,17 +912,15 @@ class PSOWarehouseRealObstacles:
         pf = np.where(within, (margin - min_dist) / margin, 0.0)
         obstacle_penalty_cont = np.sum(pf * self.obstacle_penalty * 2, axis=(1, 2))
 
-        # 額外路徑品質懲罰：避免粒子黏在起點附近、回頭走、過度折返
         goal_ref = self.goal_pos[np.newaxis, np.newaxis, :]
         start_ref = self.start_pos[np.newaxis, np.newaxis, :]
         direct_len = max(np.linalg.norm(self.goal_pos - self.start_pos), 1e-6)
 
-        # 1) 回頭懲罰：若下一節點離目標更遠則加罰
         dist_to_goal_nodes = np.linalg.norm(path - goal_ref, axis=2)  # (N, nw+2)
         away_steps = np.maximum(dist_to_goal_nodes[:, 1:] - dist_to_goal_nodes[:, :-1], 0.0)
         backtrack_penalty = np.sum(away_steps, axis=1) * 30.0
 
-        # 2) 起點黏著懲罰：各 waypoint 至少應有一定前進距離
+        # 2) Penalize waypoints too close to start
         wp = path[:, 1:-1, :]  # (N, nw, 3)
         dist_from_start = np.linalg.norm(wp - start_ref, axis=2)
         alphas = np.linspace(1.0 / (nw + 1), nw / (nw + 1), nw)
@@ -957,7 +930,6 @@ class PSOWarehouseRealObstacles:
             axis=1,
         ) * 12.0
 
-        # 3) 折返/急轉彎懲罰：鼓勵可飛行的平滑路徑
         v_prev = path[:, 1:-1, :] - path[:, :-2, :]
         v_next = path[:, 2:, :] - path[:, 1:-1, :]
         norm_prev = np.linalg.norm(v_prev, axis=2)
@@ -977,7 +949,7 @@ class PSOWarehouseRealObstacles:
         )
 
     def update_fitness(self):
-        """全吐量化批次適應度更新"""
+        """Main runtime loop for PSO optimization, validation, and flight execution."""
         fitness_all = self.batch_fitness(self.particles)  # (N,)
 
         improved = fitness_all < self.personal_best_fitness
@@ -991,19 +963,18 @@ class PSOWarehouseRealObstacles:
             best_pts = self.global_best.reshape(self.num_waypoints, 3)
             self.global_best_path = [self.start_pos.copy()] + list(best_pts) + [self.goal_pos.copy()]
 
-        # 檢查終點是否到達
         best_pts = self.global_best.reshape(self.num_waypoints, 3)
         dist_to_goal = np.linalg.norm(best_pts[-1] - self.goal_pos)
         if dist_to_goal <= self.goal_tolerance:
             if not self.goal_reached:
-                print(f"已達到終點要求（{self.goal_tolerance}m 容差）：{self.global_best}")
+                print(f"Goal reached within {self.goal_tolerance}m tolerance: {self.global_best}")
             self.goal_reached = True
 
     def update_particles(self):
-        """全向量化粒子更新，包含 waypoint z 搜尋。"""
+        """Vectorized particle update including z-axis waypoint search."""
         N = self.num_particles
 
-        # 動態 PSO 係數：前期高探索、後期高收斂
+        # PSO parameter adaptation based on progress
         progress = min(1.0, self.pso_iteration / max(float(self.pso_max_iterations), 1.0))
         w = 0.9 - 0.5 * progress
         c1 = 2.4 - 1.2 * progress
@@ -1057,7 +1028,7 @@ class PSOWarehouseRealObstacles:
             self.particles[idx[:, None], z_idx] = np.clip(guide_z + noise_z, self.planning_z_min, self.planning_z_max)
 
     def inject_diversity(self, fraction=0.2):
-        """停滯時重置部分粒子到全域空間，避免整群陷入局部極值。"""
+        """Initialize dynamic waypoint count and particle state from scene complexity."""
         count = max(1, int(self.num_particles * fraction))
         idx = np.random.choice(self.num_particles, size=count, replace=False)
 
@@ -1078,9 +1049,8 @@ class PSOWarehouseRealObstacles:
         self.personal_best_fitness[idx] = np.inf
 
     def visualize_pso_step(self):
-        """視覺化 PSO 當前狀態"""
+        """Visualize current PSO state, obstacles, and best path."""
         self.visualize_frame_count += 1
-        # 僅在啟動初期低頻重試，避免每幀重設導致閃爍
         if self.viewport_retry_count < 10 and (self.visualize_frame_count % 30 == 0):
             if not self.layout_applied:
                 self.enforce_embedded_split_layout()
@@ -1090,15 +1060,13 @@ class PSOWarehouseRealObstacles:
         self.update_follow_camera_view()
         self.draw.clear_points()
 
-        # 繪製障礙物邊界 + 禁飛紅框
         drone_z = float(self.start_pos[2])
         for obstacle in self.obstacles:
             obs_x, obs_y, obs_z_min, obs_x_max, obs_y_max, obs_z_max = obstacle
             obs_width  = obs_x_max - obs_x
             obs_height = obs_y_max - obs_y
 
-            # 僅繪製在飛行高度有體積的障礙物（可飛越者以淺藍色標示）
-            is_blocking = (obs_z_max >= drone_z)  # 不可飛越 → 紅框
+            is_blocking = (obs_z_max >= drone_z)
             frame_color = [1.0, 0.0, 0.0, 1.0] if is_blocking else [0.0, 0.5, 1.0, 0.5]
 
             obs_points = []
@@ -1107,30 +1075,25 @@ class PSOWarehouseRealObstacles:
 
             num_boundary_points = 20
             for i in range(num_boundary_points):
-                # 上邊界
                 x = obs_x + (obs_width * i / num_boundary_points)
                 obs_points.append([x, obs_y, drone_z])
                 obs_colors.append([0.5, 0.5, 0.5, 0.7])
                 obs_sizes.append(8.0)
-                # 下邊界
                 obs_points.append([x, obs_y_max, drone_z])
                 obs_colors.append([0.5, 0.5, 0.5, 0.7])
                 obs_sizes.append(8.0)
 
             for i in range(num_boundary_points):
                 y = obs_y + (obs_height * i / num_boundary_points)
-                # 左邊界
                 obs_points.append([obs_x, y, drone_z])
                 obs_colors.append([0.5, 0.5, 0.5, 0.7])
                 obs_sizes.append(8.0)
-                # 右邊界
                 obs_points.append([obs_x_max, y, drone_z])
                 obs_colors.append([0.5, 0.5, 0.5, 0.7])
                 obs_sizes.append(8.0)
 
             self.draw.draw_points(obs_points, obs_colors, obs_sizes)
 
-            # 禁飛框（紅色 = 阻擋，藍色 = 可飛越）
             box_points = [
                 [obs_x,     obs_y,     drone_z],
                 [obs_x_max, obs_y,     drone_z],
@@ -1142,9 +1105,7 @@ class PSOWarehouseRealObstacles:
             line_sizes = [8.0] * len(box_points)
             self.draw.draw_points(box_points, line_colors, line_sizes)
 
-        # 如果已經生成最終軌跡，隱藏粒子只保留紫線與紅框
         if not getattr(self, 'path_visible', False):
-            # 繪製粒子
             colors = []
             sizes = []
             draw_pts = []
@@ -1157,7 +1118,6 @@ class PSOWarehouseRealObstacles:
                     min_distance = float('inf')
                     for obstacle in self.obstacles:
                         obs_x, obs_y, obs_z_min, obs_x_max, obs_y_max, obs_z_max = obstacle
-                        # 只對與無人機垂直包絡重疊的障礙物計算距離
                         h_half = self.drone_height / 2.0
                         if obs_z_max < (drone_z - h_half) or obs_z_min > (drone_z + h_half):
                             continue
@@ -1167,62 +1127,56 @@ class PSOWarehouseRealObstacles:
                         min_distance = min(min_distance, distance)
         
                     if min_distance < self.safety_margin:
-                        colors.append([1.0, 0.3, 0.3, 1.0])  # 紅色警示
+                        colors.append([1.0, 0.3, 0.3, 1.0])
                         sizes.append(15.0)
                     elif min_distance < self.safety_margin * 2:
-                        colors.append([1.0, 0.6, 0.2, 1.0])  # 橙色警告
+                        colors.append([1.0, 0.6, 0.2, 1.0])
                         sizes.append(12.0)
                     else:
-                        colors.append([0.0, 0.2, 0.8, 1.0])  # 安全深藍色
+                        colors.append([0.0, 0.2, 0.8, 1.0])
                         sizes.append(10.0)
     
             self.draw.draw_points(draw_pts, colors, sizes)
 
-        # 繪製起點（綠色）
         self.draw.draw_points([self.start_pos.tolist()], [[0, 1, 0, 1]], [30.0])
-        # 繪製終點（紅色）
         self.draw.draw_points([self.goal_pos.tolist()], [[1, 0, 0, 1]], [30.0])
-        # 繪製彈性區
         self.draw_elastic_zone()
 
-        # 最終路徑：僅在最終可視化模式下繪製細線（縮小點容替粗線）
         if self.path_visible and len(self.global_best_path) >= 2:
             route_points = []
             for i in range(len(self.global_best_path) - 1):
                 start_point = self.global_best_path[i]
                 end_point = self.global_best_path[i + 1]
-                num_interpolation_points = 8   # 減少插値點，避免點實太密
+                num_interpolation_points = 8
                 for j in range(num_interpolation_points + 1):
                     t = j / num_interpolation_points
                     interpolated_point = start_point + t * (end_point - start_point)
                     route_points.append(interpolated_point.tolist())
 
             route_colors = [[0.7, 0.0, 1.0, 0.9]] * len(route_points)
-            route_sizes = [4.0] * len(route_points)   # 大幅縮小：25 → 4
+            route_sizes = [4.0] * len(route_points)
             self.draw.draw_points(route_points, route_colors, route_sizes)
 
-        # 繪製當前全局最佳轉折點（黃綠色）＋無人機尺寸圓圈
         best_pts = self.global_best.reshape(self.num_waypoints, 3)
         self.draw.draw_points(
             best_pts.tolist(),
             [[0.8, 0.8, 0, 1]] * self.num_waypoints,
             [15.0] * self.num_waypoints
         )
-        # 在每個轉折點畫一個無人機尺寸的圓圈（半透明黃色）——讓發展看清楚轉折點有沒有碰這障礙物
         for wp in best_pts:
             self.draw_elastic_zone(
                 center=wp.tolist(),
-                color=[1.0, 0.9, 0.0, 0.25],   # 半透明黃色
+                color=[1.0, 0.9, 0.0, 0.25],
                 radius=self.drone_body_radius
             )
 
     def draw_elastic_zone(self, center=None, color=None, radius=None):
-        """繪製無人機尺寸球體点雲（占空尺寸可視化）
-        
+        """Render a drone-size spherical point cloud as an elastic safety zone.
+
         Args:
-            center: 球心位置 [x,y,z]，預設為終點
-            color : [r,g,b,a]，預設為半透明紅
-            radius: 球體半徑，預設為 drone_body_radius
+            center: Sphere center [x, y, z], defaults to goal.
+            color: RGBA color [r, g, b, a], defaults to translucent red.
+            radius: Sphere radius, defaults to drone_body_radius.
         """
         if center is None:
             center = self.goal_pos
@@ -1234,7 +1188,7 @@ class PSOWarehouseRealObstacles:
         num_points = 40
         elastic_points = []
 
-        # 均勻采樣在球面上（利用 Fibonacci sphere 讓分布更均勻）
+        # ( Fibonacci sphere )
         golden = np.pi * (3.0 - np.sqrt(5.0))
         for i in range(num_points):
             y_off = 1.0 - (i / float(num_points - 1)) * 2.0
@@ -1250,27 +1204,24 @@ class PSOWarehouseRealObstacles:
         self.draw.draw_points(elastic_points, elastic_colors, elastic_sizes)
 
     def reset_pso(self):
-        """重置 PSO 狀態（保留起終點，重新計算動態轉折點）"""
+        """Reset PSO state while preserving current start and goal."""
         self.compute_dynamic_waypoints()
         self.pso_iteration = 0
         
-        # 初始化全局最佳為第一個粒子
         self.global_best = self.particles[0].copy()
         self.global_best_fitness = self.fitness_function(self.global_best)
         
-        # 路徑歷史
         best_pts = self.global_best.reshape(self.num_waypoints, 3)
         self.global_best_path = [self.start_pos.copy()] + list(best_pts) + [self.goal_pos.copy()]
         self.goal_reached = False
         self.path_visible = False
-        print("PSO 狀態已重置，準備新一輪優化。")
+        print("PSO state reset.")
 
     def check_path_collision(self):
-        """使用精確 3D Slab Method 驗證當前最佳路徑每條線段是否穿越障礙物。
-        加入 Z 軸過濾：僅對飛行高度有體積的障礙物進行碰撞偵測。
+        """Validate current best path with exact 3D slab-intersection checks.
 
         Returns:
-            (bool, int): (有碰撞, 碰撞線段數)
+            tuple[bool, int]: (has_collision, colliding_segment_count)
         """
         if not self.obstacles:
             return False, 0
@@ -1278,7 +1229,7 @@ class PSOWarehouseRealObstacles:
         path = self.global_best_path   # list of np.ndarray  [x, y, z]
         obs_arr_all = np.array(self.obstacles)   # (M, 6): [xmin,ymin,zmin,xmax,ymax,zmax]
 
-        # ══ 膨脹 AABB（3D）：與 batch_fitness 邏輯完全一致 ══════════
+        # ══  AABB(3D): batch_fitness  ══════════
         inflate_xy = self.safety_margin + self.drone_body_radius
         inflate_z  = self.drone_height / 2.0
 
@@ -1300,7 +1251,7 @@ class PSOWarehouseRealObstacles:
             dy = p2[1] - p1[1]
             dz = p2[2] - p1[2]
 
-            # ── X 軸 Slab ──
+            # ── X  Slab ──
             if abs(dx) < EPS:
                 tx_lo = np.where((p1[0] >= ox_all) & (p1[0] <= oxw_all), -np.inf,  np.inf)
                 tx_hi = np.where((p1[0] >= ox_all) & (p1[0] <= oxw_all),  np.inf, -np.inf)
@@ -1310,7 +1261,7 @@ class PSOWarehouseRealObstacles:
                 tx_lo = np.minimum(tx1, tx2)
                 tx_hi = np.maximum(tx1, tx2)
 
-            # ── Y 軸 Slab ──
+            # ── Y  Slab ──
             if abs(dy) < EPS:
                 ty_lo = np.where((p1[1] >= oy_all) & (p1[1] <= oyh_all), -np.inf,  np.inf)
                 ty_hi = np.where((p1[1] >= oy_all) & (p1[1] <= oyh_all),  np.inf, -np.inf)
@@ -1320,7 +1271,7 @@ class PSOWarehouseRealObstacles:
                 ty_lo = np.minimum(ty1, ty2)
                 ty_hi = np.maximum(ty1, ty2)
 
-            # ── Z 軸 Slab ──
+            # ── Z  Slab ──
             if abs(dz) < EPS:
                 tz_lo = np.where((p1[2] >= oz_all) & (p1[2] <= ozh_all), -np.inf,  np.inf)
                 tz_hi = np.where((p1[2] >= oz_all) & (p1[2] <= ozh_all),  np.inf, -np.inf)
@@ -1342,31 +1293,31 @@ class PSOWarehouseRealObstacles:
         return total_collision_segs > 0, total_collision_segs
 
     def run(self):
-        """主運行循環"""
+        """Main runtime loop for PSO optimization, validation, and flight execution."""
         print("=" * 60)
-        print("PSO 倉庫路徑規劃模擬（真實障礙物偵測版）已準備就緒！")
-        print(f"場景：Warehouse with Shelves")
-        print(f"障礙物數量：{len(self.obstacles)} 個（從場景自動偵測）")
-        print(f"PSO 參數：{self.num_particles} 個粒子，1000 次迭代")
-        print(f"起點：{self.start_pos}  →  終點：{self.goal_pos}")
-        print(f"規劃高度範圍：Z:[{self.planning_z_min:.2f}, {self.planning_z_max:.2f}]")
-        print(f"目標容差：{self.goal_tolerance}m")
-        print("按 Play 開始模擬，或直接關閉窗口退出")
+        print("Starting PSO Path Planning Simulation!")
+        print(f"Environment: Warehouse with Shelves")
+        print(f"Obstacles detected: {len(self.obstacles)}")
+        print(f"PSO Configuration: {self.num_particles} particles, max 1000 iterations")
+        print(f"Path: {self.start_pos} -> {self.goal_pos}")
+        print(f"Planning Z-range: [{self.planning_z_min:.2f}, {self.planning_z_max:.2f}]")
+        print(f"Goal tolerance: {self.goal_tolerance}m")
+        print("Press Play to start simulation.")
         print("=" * 60)
 
         simulation_count = 0
 
         while simulation_app.is_running():
             simulation_count += 1
-            print(f"\n=== 開始第 {simulation_count} 輪模擬 ===")
+            print(f"\n=== Simulation Round {simulation_count} ===")
 
-            # 每輪分檔：從 PSO 計算開始錄到本輪結束（含粒子跳動與飛行）
+            # Start PSO optimization
             self.stop_video_recording()
             self.start_video_recording(simulation_count)
 
             self.reset_pso()
-            self.timeline.pause() # 暫停物理引擎，直到 PSO 算完
-            print("等待 PSO 計算路徑，物理引擎暫時停用")
+            self.timeline.pause()  # Pause timeline for PSO optimization
+            print("PSO optimization paused.")
 
             step_count = 0
             max_steps = 500
@@ -1378,7 +1329,7 @@ class PSOWarehouseRealObstacles:
 
             try:
                 while simulation_app.is_running() and step_count < max_steps:
-                    # ===== PSO 路徑最佳化開始 =====
+                    # ===== PSO  =====
                     if step_count % update_interval == 0:
                         self.update_particles()
                         self.update_fitness()
@@ -1389,18 +1340,15 @@ class PSOWarehouseRealObstacles:
 
                     if step_count % 100 == 0:
                         dist_to_goal = np.linalg.norm(self.global_best.reshape(self.num_waypoints, 3)[-1] - self.goal_pos)
-                        print(f"PSO 迭代步數: {step_count}, "
-                              f"最佳適應度: {self.global_best_fitness:.3f}, "
-                              f"距目標: {dist_to_goal:.3f}m")
+                        print(f"PSO Iteration: {step_count}, Best Fitness: {self.global_best_fitness:.3f}, Distance to Goal: {dist_to_goal:.3f}m")
 
                     if self.goal_reached:
-                        print("目標已精準到達，停止當前模擬輪次。")
+                        print("Goal reached.")
                         break
 
                     if step_count % 50 == 0:
                         simulation_app.update()
 
-                    # 長時間沒有進步就提早停止，避免無效運算
                     if step_count % 50 == 0:
                         if self.global_best_fitness < best_checkpoint - 1e-3:
                             best_checkpoint = self.global_best_fitness
@@ -1409,44 +1357,40 @@ class PSOWarehouseRealObstacles:
                             stagnant_count += 1
                         if stagnant_count >= 2 and stagnant_count < 4:
                             self.inject_diversity(fraction=0.2)
-                            print("PSO 停滯，注入 20% 全域粒子以增加探索能力。")
+                            print("PSO injecting diversity, 20% particles randomized.")
                         if stagnant_count >= 4:
-                            print("PSO 長時間無顯著改善，提前結束本輪優化。")
+                            print("PSO optimization stagnant, terminating.")
                             break
 
                     step_count += 1
 
                     if self.goal_reached:
-                        print(f"已精準收斂到目標，迭代步數：{step_count}, "
-                              f"最佳適應度：{self.global_best_fitness:.3f}")
+                        print(f"Goal reached at iteration {step_count}, fitness: {self.global_best_fitness:.3f}")
                         break
 
                 if not simulation_app.is_running():
                     self.handle_manual_close()
                     break
 
-                # 顯示最終路徑
                 self.path_visible = True
                 self.visualize_pso_step()
                 
-                print(f"=== 第 {simulation_count} 輪 PSO 最佳化結束 ===")
-                print(f"最終最佳適應度: {self.global_best_fitness:.3f}")
+                print(f"===  {simulation_count}  PSO  ===")
+                print(f": {self.global_best_fitness:.3f}")
 
-                # ══════════════════════════════════════════════════════
-                # 飛行前路徑安全驗證：精確 Slab Method 碰撞檢測
-                # 若路徑仍穿越障礙物 → 重跑 PSO（最多 MAX_RETRY 次）
-                # 完全無碰撞才允許起飛，否則最終使用最佳可得路徑並警告
-                # ══════════════════════════════════════════════════════
+                # =====================================================
+                # Validate path using Slab Method
+                # Retry PSO if collisions detected (up to MAX_RETRY)
+                # =====================================================
                 MAX_RETRY = 5
                 retry_count = 0
                 has_collision, col_segs = self.check_path_collision()
 
                 while has_collision and retry_count < MAX_RETRY:
                     retry_count += 1
-                    print(f"\n⚠ [路徑驗證失敗] 最佳路徑仍有 {col_segs} 段穿越障礙物！")
-                    print(f"  → 第 {retry_count}/{MAX_RETRY} 次重新搜尋（重新隨機初始化粒子）...")
+                    print(f"\n⚠ []  {col_segs} ！")
+                    print(f"  ->  {retry_count}/{MAX_RETRY} ()...")
 
-                    # 重新隨機初始化粒子群（保留起終點），避免陷入同一局部極值
                     self.compute_dynamic_waypoints()
                     self.global_best = self.particles[0].copy()
                     self.global_best_fitness = self.fitness_function(self.global_best)
@@ -1460,7 +1404,6 @@ class PSOWarehouseRealObstacles:
                         if _ % 50 == 0:
                             simulation_app.update()
 
-                    # 更新最佳路徑列表
                     best_pts = self.global_best.reshape(self.num_waypoints, 3)
                     self.global_best_path = (
                         [self.start_pos.copy()] + list(best_pts) + [self.goal_pos.copy()]
@@ -1469,53 +1412,47 @@ class PSOWarehouseRealObstacles:
                     self.visualize_pso_step()
 
                     has_collision, col_segs = self.check_path_collision()
-                    print(f"  重跑後適應度: {self.global_best_fitness:.3f}，"
-                          f"碰撞線段數: {col_segs}")
+                    print(f"  : {self.global_best_fitness:.3f},"
+                          f"collisions: {col_segs}")
 
                 if has_collision:
-                    print(f"\n⚠ [警告] 經過 {MAX_RETRY} 次重試仍無法找到完全無碰撞路徑，"
-                          f"取消本輪起飛（碰撞線段: {col_segs}）。")
+                    print(f"\nWARNING: Path collision after {MAX_RETRY} retries, {col_segs} segments colliding.")
                     self.safety_margin += 0.2
                     self.refresh_obstacle_cache()
-                    print(f"  已提高安全邊距至 {self.safety_margin:.2f}，下一輪重新規劃。")
+                    print(f"Increased safety margin to {self.safety_margin:.2f}.")
                     self.world.reset()
                     self.stop_video_recording()
                     continue
                 else:
-                    print(f"\n✓ [路徑驗證通過] 路徑完全無碰撞！準備起飛。")
+                    print(f"\nSUCCESS: Collision-free path found.")
 
-                print("開始生成飛行軌跡檔案並準備無人機飛行...")
+                print("Initializing...")
 
-                # ====== 梯形速度剖面軌跡生成 ======
-                # 策略：
-                #   1. 計算整條路徑各航點的累積弧長
-                #   2. 依據距起終點距離決定速度（加速/巡航/減速三段）
-                #   3. 中間航點根據轉彎角度局部降速（轉彎越急速度越慢）
-                #   4. 終點前 decel_dist 以上就開始持續減速至 0
+                #   4.  decel_dist  0
                 traj = []
                 t_total = 0.0
-                dt      = 0.02    # 50Hz 控制頻率
-                v_max   = 2.0     # 最高巡航速度 (m/s)
-                v_min   = 0.3     # 轉彎/接近終點時的最低速度 (m/s)
-                a_max   = 1.0     # 最大加速度 / 減速度 (m/s²)
+                dt      = 0.02    # 50Hz control frequency
+                v_max   = 2.0     # Maximum velocity (m/s)
+                v_min   = 0.3     # Minimum velocity (m/s)
+                a_max   = 1.0     # Maximum acceleration (m/s²)
                 path_points = self.global_best_path
                 n_pts = len(path_points)
 
-                # --- Step 1: 各航段長度 & 累計弧長 ---
+                # --- Step 1: Compute segment distances ---
                 seg_dists = []
                 for i in range(n_pts - 1):
                     seg_dists.append(np.linalg.norm(path_points[i+1] - path_points[i]))
                 total_path_len = sum(seg_dists)
 
-                # 加速段/減速段所需距離 (v²=2as  → s=v²/2a)
-                acc_dist  = v_max**2 / (2.0 * a_max)   # 從 0 加速到 v_max 的距離
-                decel_dist = acc_dist                    # 從 v_max 減速到 0 的距離
+                # / (v²=2as  -> s=v²/2a)
+                acc_dist  = v_max**2 / (2.0 * a_max)   # Distance to accelerate from 0 to v_max
+                decel_dist = acc_dist                    # Distance to decelerate from v_max to 0
 
-                # --- Step 2: 計算各中間航點（非起終點）的「轉彎速度上限」---
-                # 轉彎角度越大 → 速度越低 (cosine 映射)
+                # --- Step 2: Compute waypoint speed limits ---
+                # Based on turn sharpness (cosine of turn angle)
                 waypoint_speed_limit = [v_max] * n_pts
-                waypoint_speed_limit[0]  = 0.0   # 起點：靜止
-                waypoint_speed_limit[-1] = 0.0   # 終點：靜止
+                waypoint_speed_limit[0]  = 0.0
+                waypoint_speed_limit[-1] = 0.0
                 for i in range(1, n_pts - 1):
                     d_in  = path_points[i]   - path_points[i-1]
                     d_out = path_points[i+1] - path_points[i]
@@ -1524,29 +1461,24 @@ class PSOWarehouseRealObstacles:
                     if norm_in > 1e-6 and norm_out > 1e-6:
                         cos_a = np.dot(d_in, d_out) / (norm_in * norm_out)
                         cos_a = np.clip(cos_a, -1.0, 1.0)
-                        # cos_a = 1  (直線) → 不降速；cos_a = -1 (U 型轉) → 降至 v_min
-                        turn_factor = (cos_a + 1.0) / 2.0           # 0~1
+                        # cos_a = 1 (straight) -> v_max; cos_a = -1 (U-turn) -> v_min
+                        turn_factor = (cos_a + 1.0) / 2.0
                         waypoint_speed_limit[i] = v_min + turn_factor * (v_max - v_min)
 
-                # --- Step 3: 逐線段插值，計算每個 dt 時間步的位置與速度 ---
-                # 計算每個航點的累計弧長
+                # --- Step 3: Generate trajectory with dt ---
                 cum_dist = [0.0]
                 for d in seg_dists:
                     cum_dist.append(cum_dist[-1] + d)
 
                 def speed_profile(s):
-                    """根據距起點弧長 s 決定梯形速度（不考慮轉彎）"""
-                    # 加速段
+                    """Trapezoidal speed profile as a function of path arc-length s."""
                     if s < acc_dist:
                         return max(v_min, np.sqrt(2.0 * a_max * s))
-                    # 減速段
                     remaining = total_path_len - s
                     if remaining < decel_dist:
                         return max(0.0, np.sqrt(2.0 * a_max * remaining))
-                    # 巡航段
                     return v_max
 
-                # 第一個點 (起點，靜止)
                 p0 = path_points[0]
                 yaw = 0.0
                 traj.append([0.0, p0[0], p0[1], p0[2], 0, 0, 0, 0,0,0, 0,0,0, yaw, 0.0])
@@ -1561,23 +1493,20 @@ class PSOWarehouseRealObstacles:
                     seg_dir = (p_end - p_start) / seg_len
                     yaw = np.arctan2(seg_dir[1], seg_dir[0])
 
-                    # 沿此段以固定 dt 推進：根據當前弧長決定速度
-                    s_seg = 0.0   # 在本線段內走的距離
+                    # Generate trajectory points with dt
+                    s_seg = 0.0
                     while s_seg < seg_len:
-                        s_global = cum_dist[i] + s_seg   # 距整條路徑起點的弧長
+                        s_global = cum_dist[i] + s_seg
 
-                        # 全局梯形速度
                         v_trap = speed_profile(s_global)
 
-                        # 轉彎速度上限（線性插值兩端航點的速度限制）
-                        alpha   = s_seg / seg_len                                  # 0→1
+                        alpha   = s_seg / seg_len
                         v_limit = (1 - alpha) * waypoint_speed_limit[i] + alpha * waypoint_speed_limit[i+1]
-                        v_limit = max(v_limit, 0.01)   # 避免除以零
+                        v_limit = max(v_limit, 0.01)
 
                         v_now = min(v_trap, v_limit)
                         v_now = max(v_now, 0.0)
 
-                        # 更新位置
                         p_now = p_start + seg_dir * s_seg
                         vel_vec = seg_dir * v_now
                         t_total += dt
@@ -1588,10 +1517,8 @@ class PSOWarehouseRealObstacles:
                                yaw, 0.0]
                         traj.append(row)
 
-                        # 推進弧長
                         s_seg += v_now * dt if v_now > 0.01 else dt * v_min
 
-                    # 確保精確抵達航點端點
                     p_end_arr = np.array(p_end)
                     v_wp = waypoint_speed_limit[i+1]
                     traj.append([t_total,
@@ -1600,7 +1527,6 @@ class PSOWarehouseRealObstacles:
                                  0, 0, 0, 0, 0, 0,
                                  yaw, 0.0])
 
-                # 終點懸停：給足夠時間讓無人機穩定降至目標點
                 last_p = path_points[-1]
                 traj.append([t_total + 5.0,
                              last_p[0], last_p[1], last_p[2],
@@ -1610,75 +1536,64 @@ class PSOWarehouseRealObstacles:
                              last_p[0], last_p[1], last_p[2],
                              0, 0, 0, 0, 0, 0, 0, 0, 0,
                              yaw, 0.0])
-                print(f"軌跡生成完成：共 {len(traj)} 個控制點，預計飛行時間 {t_total:.1f}s")
+                print(f"Trajectory generation complete: {len(traj)} control points, estimated flight time {t_total:.1f}s.")
 
                 
-                # NonlinearController 讀檔是以 flip axis=0 反轉序列的，所以寫檔時要先反轉
-                traj_np = np.flip(np.array(traj), axis=0)
-                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pso_flight_trajectory.csv")
-                np.savetxt(csv_path, traj_np, delimiter=',')
-                
-                # 更新無人機控制器
+                # NonlinearController requires time-reversed trajectory (flip axis=0)
                 controller = self.drone._backends[0]
                 controller.trajectory = controller.read_trajectory_from_csv(csv_path)
                 controller.max_index, _ = controller.trajectory.shape
                 controller.total_time = 0.0
                 controller.index = 0
-                controller.reveived_first_state = False # 重置飛行狀態
+                controller.reveived_first_state = False
                 
-                print("軌跡匯入成功！無人機即將起飛...")
+                print("Trajectory imported successfully. Drone is ready for flight.")
                 
-                # 恢復模擬，準備看無人機飛行
-                self.world.reset() # 確保無人機回到初始點
+                self.world.reset()
                 self.timeline.play()
 
-                # 保持畫面與物理更新直到迴圈關閉，同時監控碰撞
                 collision_occurred = False
                 reached_goal = False
                 while simulation_app.is_running():
-                    # self.update_particles() 取消註解這行會讓粒子繼續動，我們現在不需要
+                    # Note: PSO optimization is paused during flight execution
                     self.visualize_pso_step()
                     self.world.step(render=True)
                     self.update_follow_camera_view()
 
-                    # 碰撞監控：改為「真實物理墜毀與翻覆」偵測
-                    # get_world_pose() 返回 (position, [qw, qx, qy, qz])
+                    # get_world_pose() returns (position, [qw, qx, qy, qz])
                     current_pose = self.drone.get_world_pose()
                     if current_pose and current_pose[0] is not None:
                         drone_pos = current_pose[0]
                         drone_quat = current_pose[1]
                         
-                        # 將四元數 [qw, qx, qy, qz] 轉為 Euler Angles 判斷真實物理翻覆
+                        #  [qw, qx, qy, qz]  Euler Angles 
                         from scipy.spatial.transform import Rotation
                         r = Rotation.from_quat([drone_quat[1], drone_quat[2], drone_quat[3], drone_quat[0]])
                         euler_angles = r.as_euler('xyz', degrees=True)
                         roll, pitch = euler_angles[0], euler_angles[1]
                         
-                        # 當無人機因為真實物理撞擊導致翻覆 (傾角>60度) 或墜落到地面 (Z<0.3) 視為墜毀！
+                        # Check for collision: excessive tilt (>60°) or too low (Z<0.3m)
                         if abs(roll) > 60 or abs(pitch) > 60 or drone_pos[2] < 0.3:
-                            print(f"\n[墜機警告] 偵測到無人機物理墜毀！(Roll: {roll:.1f}°, Pitch: {pitch:.1f}°, Z: {drone_pos[2]:.2f}m)")
+                            print(f"\nCOLLISION DETECTED! (Roll: {roll:.1f}°, Pitch: {pitch:.1f}°, Z: {drone_pos[2]:.2f}m)")
                             collision_occurred = True
 
-                        # 到點判斷：看到飛機到達定點即下達到點指令並停止錄影存檔
                         dist_to_goal_live = np.linalg.norm(np.array(drone_pos) - self.goal_pos)
                         arrive_threshold = max(self.goal_tolerance, self.goal_radius)
                         if dist_to_goal_live <= arrive_threshold:
-                            print(f"\n[到點指令] 飛機已到達定點！(距離目標: {dist_to_goal_live:.3f}m, 閾值: {arrive_threshold:.3f}m)")
+                            print(f"\nSUCCESS: Goal reached (distance: {dist_to_goal_live:.3f}m, threshold: {arrive_threshold:.3f}m)")
                             reached_goal = True
                             self.timeline.stop()
                             self.stop_video_recording()
                             break
                             
-                        # 若無墜機，加上一點小延遲讓畫面更新平順
                         import time
                         time.sleep(0.01)
                                 
                     if collision_occurred:
-                        print(f"中斷當前飛行，增加安全防護距離重新計算路徑...")
+                        print(f",...")
                         self.safety_margin += 0.2
                         self.refresh_obstacle_cache()
-                        print(f"新的安全邊距 (Safety Margin) 更新為: {self.safety_margin:.2f}")
-                        # 墜毀後停留一小段時間讓使用者看見翻覆畫面
+                        print(f"Updated safety margin to: {self.safety_margin:.2f}")
                         for _ in range(100):
                             self.world.step(render=True)
                         self.timeline.stop()
@@ -1689,34 +1604,34 @@ class PSOWarehouseRealObstacles:
 
                 self.stop_video_recording()
                         
-                # 如果是發生碰撞而破壞內部迴圈，不要跳出外面的大迴圈（即不要執行 break）
+                # Handle collision: reset and retry PSO optimization
                 if collision_occurred:
-                    print("重置物理世界，準備重新啟動 PSO...")
+                    print("Collision occurred, resetting for PSO retry...")
                     self.world.reset()
-                    continue  # continue 外層大迴圈重新跑 PSO
+                    continue  # Continue PSO optimization
                 else:
                     if reached_goal:
-                        print("本輪已完成到點並存檔。")
+                        print("Flight completed successfully.")
                         rerun_choice = "n"
                         while True:
                             try:
-                                rerun_choice = input("是否重新生成起始點與終點並重跑一次？[Y/N]: ").strip().lower()
+                                rerun_choice = input("？[Y/N]: ").strip().lower()
                             except EOFError:
                                 rerun_choice = "n"
                             if rerun_choice in ("y", "yes", "n", "no"):
                                 break
-                            print("請輸入 Y 或 N。")
+                            print(" Y  N.")
 
                         if rerun_choice in ("y", "yes"):
-                            print("已選擇重新生成起始點與終點，準備啟動下一輪。")
+                            print(",.")
                             self.start_pos, self.goal_pos = self.generate_random_positions()
                             self.goal_reached = False
                             self.path_visible = False
                             self.refresh_obstacle_cache()
-                            print(f"新起點: {self.start_pos}")
-                            print(f"新終點: {self.goal_pos}")
+                            print(f"New start position: {self.start_pos}")
+                            print(f"New goal position: {self.goal_pos}")
 
-                            # 嘗試把無人機放到新起點，若 API 不支援則至少重置世界
+                            # Reset drone pose via API 
                             try:
                                 self.timeline.stop()
                                 self.world.reset()
@@ -1726,20 +1641,20 @@ class PSOWarehouseRealObstacles:
                                         Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
                                     )
                             except Exception as pose_err:
-                                print(f"⚠ 無法直接重設無人機到新起點: {pose_err}")
+                                print(f"WARNING: Failed to reset drone pose: {pose_err}")
 
-                            continue  # 回到外層 while，重跑整個流程
+                            continue  # Continue to next simulation
 
-                        print("已選擇不重跑，保留視窗畫面（關閉視窗即結束程式）。")
+                        print("Simulation completed. Exiting.")
                         while simulation_app.is_running():
                             self.visualize_pso_step()
                             self.update_follow_camera_view()
                             simulation_app.update()
                             time.sleep(0.01)
-                    break     # 否則代表正常結束，或手動關閉，可以跳出模擬大迴圈
+                    break
 
             except Exception as e:
-                print(f"模擬過程中發生錯誤: {e}")
+                print(f"Error during initialization: {e}")
                 import traceback
                 traceback.print_exc()
                 self.stop_video_recording()
