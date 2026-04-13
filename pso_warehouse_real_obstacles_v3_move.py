@@ -1217,6 +1217,55 @@ class PSOWarehouseRealObstacles:
         self.path_visible = False
         print("PSO state reset.")
 
+    def place_drone_at_current_start(self):
+        """Place the existing drone actor at the current start position."""
+        if not hasattr(self, "drone"):
+            return
+        if not hasattr(self.drone, "set_world_pose"):
+            return
+        self.drone.set_world_pose(
+            self.start_pos.tolist(),
+            Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
+        )
+
+    def save_convergence_curve(self, fitness_history, simulation_count, timestamp):
+        """Save PSO fitness convergence data to CSV and generate a PNG plot."""
+        if not fitness_history:
+            return
+
+        movies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "movies")
+        os.makedirs(movies_dir, exist_ok=True)
+
+        csv_out = os.path.join(movies_dir, f"pso_fitness_round_{int(simulation_count):03d}_{timestamp}.csv")
+        with open(csv_out, "w") as f:
+            f.write("iteration,best_fitness\n")
+            for it, fit in fitness_history:
+                f.write(f"{it},{fit:.6f}\n")
+        print(f"[Convergence] Fitness history saved: {csv_out}")
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            iterations = [r[0] for r in fitness_history]
+            fitnesses  = [r[1] for r in fitness_history]
+
+            fig, ax = plt.subplots(figsize=(9, 4))
+            ax.plot(iterations, fitnesses, linewidth=1.5, color="royalblue")
+            ax.set_xlabel("PSO Iteration")
+            ax.set_ylabel("Best Fitness")
+            ax.set_title(f"PSO Fitness Convergence — Round {simulation_count}")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+            png_out = csv_out.replace(".csv", ".png")
+            fig.savefig(png_out, dpi=150)
+            plt.close(fig)
+            print(f"[Convergence] Convergence plot saved: {png_out}")
+        except Exception as e:
+            print(f"[Convergence] WARNING: Could not generate plot: {e}")
+
     def check_path_collision(self):
         """Validate current best path with exact 3D slab-intersection checks.
 
@@ -1326,6 +1375,8 @@ class PSOWarehouseRealObstacles:
             update_interval = 3
             best_checkpoint = np.inf
             stagnant_count = 0
+            fitness_history = []
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             try:
                 while simulation_app.is_running() and step_count < max_steps:
@@ -1333,6 +1384,7 @@ class PSOWarehouseRealObstacles:
                     if step_count % update_interval == 0:
                         self.update_particles()
                         self.update_fitness()
+                        fitness_history.append((step_count, float(self.global_best_fitness)))
 
                     if step_count % visualize_interval == 0:
                         self.visualize_pso_step()
@@ -1377,6 +1429,7 @@ class PSOWarehouseRealObstacles:
                 
                 print(f"===  {simulation_count}  PSO  ===")
                 print(f": {self.global_best_fitness:.3f}")
+                self.save_convergence_curve(fitness_history, simulation_count, ts)
 
                 # =====================================================
                 # Validate path using Slab Method
@@ -1388,8 +1441,8 @@ class PSOWarehouseRealObstacles:
 
                 while has_collision and retry_count < MAX_RETRY:
                     retry_count += 1
-                    print(f"\n⚠ []  {col_segs} ！")
-                    print(f"  ->  {retry_count}/{MAX_RETRY} ()...")
+                    print(f"\n[RETRY] Collision detected on current path: {col_segs} colliding segment(s).")
+                    print(f"[RETRY] Re-running PSO optimization ({retry_count}/{MAX_RETRY}) to find a collision-free path...")
 
                     self.compute_dynamic_waypoints()
                     self.global_best = self.particles[0].copy()
@@ -1540,6 +1593,10 @@ class PSOWarehouseRealObstacles:
 
                 
                 # NonlinearController requires time-reversed trajectory (flip axis=0)
+                traj_np = np.flip(np.array(traj), axis=0)
+                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pso_flight_trajectory.csv")
+                np.savetxt(csv_path, traj_np, delimiter=',')
+
                 controller = self.drone._backends[0]
                 controller.trajectory = controller.read_trajectory_from_csv(csv_path)
                 controller.max_index, _ = controller.trajectory.shape
@@ -1550,6 +1607,7 @@ class PSOWarehouseRealObstacles:
                 print("Trajectory imported successfully. Drone is ready for flight.")
                 
                 self.world.reset()
+                self.place_drone_at_current_start()
                 self.timeline.play()
 
                 collision_occurred = False
@@ -1615,15 +1673,15 @@ class PSOWarehouseRealObstacles:
                         rerun_choice = "n"
                         while True:
                             try:
-                                rerun_choice = input("？[Y/N]: ").strip().lower()
+                                rerun_choice = input("Re-run simulation with new start/goal positions? [Y/N]: ").strip().lower()
                             except EOFError:
                                 rerun_choice = "n"
                             if rerun_choice in ("y", "yes", "n", "no"):
                                 break
-                            print(" Y  N.")
+                            print("Invalid input. Please enter Y or N.")
 
                         if rerun_choice in ("y", "yes"):
-                            print(",.")
+                            print("Generating new start/goal positions and restarting simulation...")
                             self.start_pos, self.goal_pos = self.generate_random_positions()
                             self.goal_reached = False
                             self.path_visible = False
@@ -1631,15 +1689,11 @@ class PSOWarehouseRealObstacles:
                             print(f"New start position: {self.start_pos}")
                             print(f"New goal position: {self.goal_pos}")
 
-                            # Reset drone pose via API 
+                            # Reset drone to new start position
                             try:
                                 self.timeline.stop()
                                 self.world.reset()
-                                if hasattr(self.drone, "set_world_pose"):
-                                    self.drone.set_world_pose(
-                                        self.start_pos.tolist(),
-                                        Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
-                                    )
+                                self.place_drone_at_current_start()
                             except Exception as pose_err:
                                 print(f"WARNING: Failed to reset drone pose: {pose_err}")
 
